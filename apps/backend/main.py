@@ -1,0 +1,95 @@
+"""
+Minimee Backend - FastAPI Orchestration
+Main entry point for the AI orchestration service
+"""
+import os
+import time
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from db.check_pgvector import check_pgvector
+from db.database import DATABASE_URL, engine
+from sqlalchemy import text
+
+# Import routers
+from routers import (
+    health_router,
+    settings_router,
+    policy_router,
+    agents_router,
+    prompts_router,
+    ingest_router,
+    gmail_router,
+    minimee_router,
+    logs_router
+)
+
+app = FastAPI(
+    title="Minimee API",
+    description="AI agent orchestration backend",
+    version="0.1.0"
+)
+
+# CORS middleware for Next.js frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    response.headers["X-Process-Time"] = str(process_time)
+    return response
+
+
+# Include routers
+app.include_router(health_router.router)
+app.include_router(settings_router.router)
+app.include_router(policy_router.router)
+app.include_router(agents_router.router)
+app.include_router(prompts_router.router)
+app.include_router(ingest_router.router)
+app.include_router(gmail_router.router)
+app.include_router(minimee_router.router)
+app.include_router(logs_router.router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    startup_start = time.time()
+    print("Starting Minimee Backend...")
+    
+    # Verify pgvector extension
+    database_url = os.getenv("DATABASE_URL", DATABASE_URL)
+    try:
+        check_pgvector(database_url)
+        print("✓ pgvector extension verified")
+    except RuntimeError as e:
+        print(f"✗ ERROR: {e}")
+        raise
+    
+    # Verify database connection
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        print("✓ Database connection verified")
+    except Exception as e:
+        print(f"✗ ERROR: Database connection failed: {e}")
+        raise
+    
+    startup_time = time.time() - startup_start
+    print(f"✓ Backend started successfully in {startup_time:.2f}s")
+
+
+@app.get("/")
+async def root():
+    return {"message": "Minimee API", "status": "running", "version": "0.1.0"}
+

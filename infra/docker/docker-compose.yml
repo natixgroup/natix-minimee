@@ -1,0 +1,98 @@
+version: '3.8'
+
+networks:
+  minimee-network:
+    driver: bridge
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: minimee-postgres
+    environment:
+      POSTGRES_USER: minimee
+      POSTGRES_PASSWORD: minimee
+      POSTGRES_DB: minimee
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minimee"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - minimee-network
+
+  backend:
+    build:
+      context: ../../apps/backend
+      dockerfile: Dockerfile
+    container_name: minimee-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://minimee:minimee@postgres:5432/minimee
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ../../apps/backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - minimee-network
+
+  dashboard:
+    build:
+      context: ../../apps/dashboard
+      dockerfile: Dockerfile
+    container_name: minimee-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    volumes:
+      - ../../apps/dashboard:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    command: npm run dev
+    networks:
+      - minimee-network
+
+  bridge:
+    build:
+      context: ../../apps/bridge
+      dockerfile: Dockerfile
+    container_name: minimee-bridge
+    environment:
+      - BACKEND_API_URL=http://backend:8000
+      - USER_ID=1
+      - LOG_LEVEL=info
+    volumes:
+      - ../../apps/bridge:/app
+      - bridge_auth:/app/auth_info
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - minimee-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: minimee-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - minimee-network
+
+volumes:
+  postgres_data:
+  bridge_auth:
+  ollama_data:
+
