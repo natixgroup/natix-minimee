@@ -7,6 +7,7 @@ from sqlalchemy import text as sql_text
 from typing import Optional, List, Tuple
 from services.embeddings import generate_embedding, find_similar_messages
 from services.logs_service import log_to_db
+from services.metrics import record_rag_hit
 from models import Message, Summary
 
 
@@ -35,6 +36,10 @@ def retrieve_context(
         
         if not similar_results:
             return "No relevant conversation history found."
+        
+        # Record RAG hit
+        avg_similarity = sum(r['similarity'] for r in similar_results) / len(similar_results) if similar_results else 0
+        record_rag_hit(db, avg_similarity, len(similar_results))
         
         context_parts = ["Relevant conversation history:"]
         for result in similar_results:
@@ -80,7 +85,7 @@ def find_similar_messages_enhanced(
     Enhanced similarity search with top-k, language filtering, and chunk support
     Returns list of dicts with: message, similarity, summary (if chunk), tags
     """
-    query_vector = generate_embedding(query_text)
+    query_vector = generate_embedding(query_text, db=db)
     vector_str = "[" + ",".join(map(str, query_vector)) + "]"
     
     # Build query with optional filters

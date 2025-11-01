@@ -4,11 +4,13 @@ Main entry point for the AI orchestration service
 """
 import os
 import time
+import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from db.check_pgvector import check_pgvector
-from db.database import DATABASE_URL, engine
+from db.database import DATABASE_URL, engine, get_db
 from sqlalchemy import text
+from services.logs_service import log_structured
 
 # Import routers
 from routers import (
@@ -39,13 +41,45 @@ app.add_middleware(
 )
 
 
-# Request logging middleware
+# Request logging middleware with structured logging
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
+    request_id = str(uuid.uuid4())
+    
+    # Add request_id to request state for use in handlers
+    request.state.request_id = request_id
+    request.state.start_time = start_time
+    
+    # Process request
     response = await call_next(request)
+    
+    # Calculate latency
     process_time = time.time() - start_time
-    response.headers["X-Process-Time"] = str(process_time)
+    
+    # Add headers
+    response.headers["X-Process-Time"] = str(round(process_time, 4))
+    response.headers["X-Request-ID"] = request_id
+    
+    # Log structured request
+    try:
+        db = next(get_db())
+        log_structured(
+            db=db,
+            level="INFO" if response.status_code < 400 else "ERROR",
+            message=f"{request.method} {request.url.path} - {response.status_code}",
+            service="api",
+            request_id=request_id,
+            endpoint=request.url.path,
+            method=request.method,
+            status_code=response.status_code,
+            latency_ms=round(process_time * 1000, 2),
+            user_agent=request.headers.get("user-agent"),
+        )
+    except Exception:
+        # Don't fail request if logging fails
+        pass
+    
     return response
 
 
@@ -59,6 +93,7 @@ app.include_router(ingest_router.router)
 app.include_router(gmail_router.router)
 app.include_router(minimee_router.router)
 app.include_router(logs_router.router)
+app.include_router(metrics_router.router)
 
 
 @app.on_event("startup")

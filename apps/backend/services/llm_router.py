@@ -3,9 +3,11 @@ LLM Router - Switch between different LLM providers
 """
 import httpx
 import os
+import time
 from typing import Optional, Dict, Any
 from config import settings
 from services.logs_service import log_to_db
+from services.metrics import record_llm_call
 from sqlalchemy.orm import Session
 
 
@@ -18,19 +20,33 @@ async def generate_llm_response(
 ) -> str:
     """
     Generate response using configured LLM provider
+    Tracks metrics: latency, provider, success/failure
     """
     provider = settings.llm_provider.lower()
+    start_time = time.time()
     
     try:
         if provider == "ollama":
-            return await _generate_ollama(prompt, model, temperature, max_tokens)
+            result = await _generate_ollama(prompt, model, temperature, max_tokens)
         elif provider == "vllm":
-            return await _generate_vllm(prompt, model, temperature, max_tokens)
+            result = await _generate_vllm(prompt, model, temperature, max_tokens)
         elif provider == "openai":
-            return await _generate_openai(prompt, model, temperature, max_tokens)
+            result = await _generate_openai(prompt, model, temperature, max_tokens)
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
+        
+        # Record successful call
+        latency_ms = (time.time() - start_time) * 1000
+        if db:
+            record_llm_call(db, provider, latency_ms, len(result), success=True)
+        
+        return result
     except Exception as e:
+        # Record failed call
+        latency_ms = (time.time() - start_time) * 1000
+        if db:
+            record_llm_call(db, provider, latency_ms, None, success=False)
+        
         error_msg = f"LLM generation error ({provider}): {str(e)}"
         if db:
             log_to_db(db, "ERROR", error_msg, service="llm_router")

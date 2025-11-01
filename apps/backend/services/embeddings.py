@@ -1,11 +1,13 @@
 """
 Embedding generation service using sentence-transformers
 """
+import time
 from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from typing import Optional
 from models import Embedding, Message
 from config import settings
+from services.metrics import record_embedding_generation
 
 
 # Load model once (singleton pattern)
@@ -20,13 +22,23 @@ def get_embedding_model() -> SentenceTransformer:
     return _model
 
 
-def generate_embedding(text: str) -> list[float]:
+def generate_embedding(text: str, db: Optional[Session] = None) -> list[float]:
     """
     Generate embedding vector for text
     Returns list of floats (384 dimensions by default)
+    Tracks metrics: latency, text length
     """
+    start_time = time.time()
+    text_length = len(text)
+    
     model = get_embedding_model()
     embedding = model.encode(text, convert_to_numpy=True)
+    
+    # Record metrics
+    latency_ms = (time.time() - start_time) * 1000
+    if db:
+        record_embedding_generation(db, latency_ms, text_length)
+    
     return embedding.tolist()
 
 
@@ -40,7 +52,7 @@ def store_embedding(
     Generate and store embedding in database
     Supports both individual messages and chunks
     """
-    vector = generate_embedding(text)
+    vector = generate_embedding(text, db=db)
     
     # Convert list to pgvector format string
     vector_str = "[" + ",".join(map(str, vector)) + "]"
@@ -84,9 +96,9 @@ def find_similar_messages(
     Find similar messages using cosine similarity
     Returns list of (Message, similarity_score) tuples
     """
-    query_vector = generate_embedding(query_text)
+    query_vector = generate_embedding(query_text, db=db)
     vector_str = "[" + ",".join(map(str, query_vector)) + "]"
-    
+
     # Use pgvector cosine similarity
     from sqlalchemy import text as sql_text
     query = sql_text("""

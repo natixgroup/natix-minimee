@@ -1,6 +1,7 @@
 """
 Tests for database connection
 """
+import pytest
 from sqlalchemy import text
 from db.database import engine, get_db
 from fastapi.testclient import TestClient
