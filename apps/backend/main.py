@@ -21,8 +21,10 @@ from routers import (
     prompts_router,
     ingest_router,
     gmail_router,
+    whatsapp_router,
     minimee_router,
-    logs_router
+    logs_router,
+    metrics_router
 )
 
 app = FastAPI(
@@ -34,7 +36,7 @@ app = FastAPI(
 # CORS middleware for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://localhost:3002"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +93,7 @@ app.include_router(agents_router.router)
 app.include_router(prompts_router.router)
 app.include_router(ingest_router.router)
 app.include_router(gmail_router.router)
+app.include_router(whatsapp_router.router)
 app.include_router(minimee_router.router)
 app.include_router(logs_router.router)
 app.include_router(metrics_router.router)

@@ -50,7 +50,7 @@ class Embedding(Base):
     id = Column(Integer, primary_key=True, index=True)
     text = Column(Text, nullable=False)
     vector = Column(Vector(384), nullable=False)  # pgvector, dimension 384
-    metadata = Column(JSONB, nullable=True)
+    meta_data = Column("metadata", JSONB, nullable=True)  # Renamed to avoid SQLAlchemy reserved keyword
     message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -120,7 +120,7 @@ class Log(Base):
     id = Column(Integer, primary_key=True, index=True)
     level = Column(String, nullable=False, index=True)  # 'DEBUG', 'INFO', 'WARNING', 'ERROR'
     message = Column(Text, nullable=False)
-    metadata = Column(JSONB, nullable=True)
+    meta_data = Column("metadata", JSONB, nullable=True)  # Renamed to avoid SQLAlchemy reserved keyword
     service = Column(String, nullable=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 

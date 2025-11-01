@@ -13,6 +13,10 @@ import makeWASocket, {
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import dotenv from 'dotenv';
+import qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
+import express from 'express';
+import cors from 'cors';
 import { logger, logMessage, logConnection } from './logger.js';
 import { sendMessageToBackend, checkBackendHealth } from './webhook.js';
 import { initializeMinimeeTeam } from './groups.js';
@@ -22,10 +26,16 @@ dotenv.config();
 // Support both BACKEND_API_URL and BRIDGE_API_URL for backward compatibility
 const BACKEND_API_URL = process.env.BACKEND_API_URL || process.env.BRIDGE_API_URL || 'http://localhost:8000';
 const USER_ID = parseInt(process.env.USER_ID || '1', 10);
+const BRIDGE_PORT = parseInt(process.env.BRIDGE_PORT || '3003', 10);
 
 let sock = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
+
+// State for HTTP API
+let connectionStatus = 'disconnected'; // 'disconnected', 'connecting', 'connected'
+let currentQR = null;
+let qrImageData = null;
 
 /**
  * Extract text from Baileys message
@@ -105,7 +115,6 @@ async function startBridge() {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      printQRInTerminal: true,
       logger,
       version,
       browser: ['Minimee', 'Chrome', '1.0.0'],
@@ -122,11 +131,30 @@ async function startBridge() {
       const { connection, lastDisconnect, qr } = update;
       
       if (qr) {
+        connectionStatus = 'connecting';
+        currentQR = qr;
+        // Generate QR code as data URL for frontend
+        try {
+          qrImageData = await QRCode.toDataURL(qr);
+        } catch (error) {
+          logger.error({ error: error.message }, 'Failed to generate QR image');
+        }
+        
         logger.info('QR Code generated - scan with WhatsApp');
-        console.log('\n📱 Scan the QR code above with your WhatsApp\n');
+        console.log('\n📱 WhatsApp Connection - Scan this QR code with your phone:\n');
+        qrcode.generate(qr, { small: true });
+        console.log('\n📱 Instructions:');
+        console.log('   1. Open WhatsApp on your phone');
+        console.log('   2. Go to Settings > Linked Devices');
+        console.log('   3. Tap "Link a Device"');
+        console.log('   4. Point your camera at the QR code above\n');
       }
 
       if (connection === 'close') {
+        connectionStatus = 'disconnected';
+        currentQR = null;
+        qrImageData = null;
+        
         const error = lastDisconnect?.error;
         const statusCode = error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -145,6 +173,10 @@ async function startBridge() {
           process.exit(1);
         }
       } else if (connection === 'open') {
+        connectionStatus = 'connected';
+        currentQR = null;
+        qrImageData = null;
+        
         reconnectAttempts = 0;
         logConnection('open', {});
         logger.info('✓ WhatsApp connected successfully');
@@ -156,6 +188,7 @@ async function startBridge() {
           logger.error({ error: error.message }, 'Failed to initialize Minimee TEAM group');
         }
       } else if (connection === 'connecting') {
+        connectionStatus = 'connecting';
         logConnection('connecting', {});
         logger.info('Connecting to WhatsApp...');
       }
@@ -265,6 +298,68 @@ process.on('SIGTERM', () => {
     sock.end(undefined);
   }
   process.exit(0);
+});
+
+// HTTP API Server
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// GET /status - Get connection status
+app.get('/status', (req, res) => {
+  res.json({
+    status: connectionStatus,
+    connected: connectionStatus === 'connected',
+    has_qr: !!currentQR,
+  });
+});
+
+// GET /qr - Get QR code
+app.get('/qr', async (req, res) => {
+  if (currentQR && qrImageData) {
+    res.json({
+      qr_available: true,
+      qr_data: qrImageData,
+      qr_text: currentQR,
+    });
+  } else {
+    res.json({
+      qr_available: false,
+      qr_data: null,
+      qr_text: null,
+    });
+  }
+});
+
+// POST /restart - Restart connection (generate new QR)
+app.post('/restart', async (req, res) => {
+  try {
+    if (sock) {
+      await sock.logout();
+    }
+    connectionStatus = 'disconnected';
+    currentQR = null;
+    qrImageData = null;
+    
+    setTimeout(() => {
+      startBridge();
+    }, 1000);
+    
+    res.json({
+      status: 'restarting',
+      message: 'Bridge restarting, new QR code will be available shortly',
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+});
+
+// Start HTTP server
+app.listen(BRIDGE_PORT, '0.0.0.0', () => {
+  logger.info(`WhatsApp Bridge HTTP API listening on port ${BRIDGE_PORT}`);
 });
 
 // Start the bridge

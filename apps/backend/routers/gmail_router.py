@@ -15,7 +15,7 @@ from config import settings
 router = APIRouter()
 
 
-@router.post("/auth/gmail/start")
+@router.get("/auth/gmail/start")
 async def start_gmail_oauth(
     user_id: int = 1,  # TODO: Get from auth
     db: Session = Depends(get_db)

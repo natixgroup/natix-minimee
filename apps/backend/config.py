@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # Gmail OAuth
     gmail_client_id: Optional[str] = None
     gmail_client_secret: Optional[str] = None
-    gmail_redirect_uri: str = "http://localhost:8000/auth/gmail/callback"
+    gmail_redirect_uri: str = "http://localhost:3002/auth/gmail/callback"
     
     # API Settings
     api_host: str = "0.0.0.0"

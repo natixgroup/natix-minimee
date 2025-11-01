@@ -4,7 +4,7 @@ Enhanced with top-k similarity search and chunk support
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from services.embeddings import generate_embedding, find_similar_messages
 from services.logs_service import log_to_db
 from services.metrics import record_rag_hit

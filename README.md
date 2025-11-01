@@ -99,11 +99,11 @@ minimee/
    ```
 
 5. **Accéder aux services**
-   - Dashboard: http://localhost:3000
-   - API Backend: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
-   - Health Check: http://localhost:8000/health
-   - Metrics: http://localhost:8000/metrics
+   - Dashboard: http://localhost:3002
+   - API Backend: http://localhost:8001
+   - API Docs: http://localhost:8001/docs
+   - Health Check: http://localhost:8001/health
+   - Metrics: http://localhost:8001/metrics
 
 ## 📋 Commandes Make
 
@@ -125,7 +125,7 @@ make restore FILE=./backups/backup.sql.gz  # Restaure depuis un backup
 ## 🧩 Services Docker
 
 - **postgres**: Base de données PostgreSQL avec pgvector (port 5432)
-- **backend**: API FastAPI (port 8000)
+- **backend**: API FastAPI (port 8001 - externe, 8000 interne)
 - **dashboard**: Next.js avec hot-reload (port 3000)
 - **bridge**: Bridge WhatsApp Baileys
 - **ollama**: LLM local (port 11434)
