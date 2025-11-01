@@ -97,6 +97,7 @@ app.include_router(whatsapp_router.router)
 app.include_router(minimee_router.router)
 app.include_router(logs_router.router)
 app.include_router(metrics_router.router)
+app.include_router(llm_router.router)
 
 
 @app.on_event("startup")
