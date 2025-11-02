@@ -105,7 +105,9 @@ async def process_message(
         )
         
         # 2. Generate embedding (sera loggé dans embeddings.py)
-        store_embedding(db, message.content, message_id=message.id, request_id=request_id, user_id=message_data.user_id)
+        # Include sender in text for better RAG search (helps find conversations by person name)
+        text_with_sender = f"{message.sender}: {message.content}" if message.sender else message.content
+        store_embedding(db, text_with_sender, message_id=message.id, request_id=request_id, user_id=message_data.user_id)
         db.commit()  # Commit embedding before generating options
         
         # 3-7. Generate response options (sera loggé dans approval_flow.py et rag.py)
@@ -483,7 +485,9 @@ async def chat_stream(
             db.refresh(user_message)
             
             # 2. Generate embedding for user message
-            store_embedding(db, user_message.content, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id)
+            # Include sender in text for better RAG search
+            text_with_sender = f"{user_message.sender}: {user_message.content}" if user_message.sender else user_message.content
+            store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id)
             db.commit()
             
             # 3. Retrieve context using RAG

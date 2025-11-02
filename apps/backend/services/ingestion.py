@@ -276,22 +276,30 @@ def ingest_whatsapp_file(
                 })
                 
                 # Also create embeddings for individual messages (for backward compatibility)
+                # Include sender in text for better RAG search (e.g., "safi" will be found)
                 msg_embedding_count = 0
                 for msg_record in message_records:
                     if msg_record['db_message'].id in chunk.get('message_ids', []):
                         try:
                             parsed = msg_record['parsed']
+                            sender = parsed.get('sender', '')
+                            content = parsed.get('content', '')
+                            
+                            # Include sender in text for better semantic search
+                            # Format: "Sender: content" (consistent with chunks)
+                            text_with_sender = f"{sender}: {content}" if sender else content
+                            
                             msg_metadata = {
                                 'language': msg_record['language'],
                                 'chunk_id': embedding.id,  # Link to chunk
-                                'sender': parsed.get('sender'),
+                                'sender': sender,
                                 'recipient': parsed.get('recipient'),
                                 'recipients': parsed.get('recipients'),
                                 'source': 'whatsapp',
                             }
                             store_embedding(
                                 db,
-                                parsed['content'],
+                                text_with_sender,  # Include sender in vectorized text
                                 message_id=msg_record['db_message'].id,
                                 metadata=msg_metadata
                             )
