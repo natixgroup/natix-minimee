@@ -66,36 +66,43 @@ async def log_requests(request: Request, call_next):
     response.headers["X-Process-Time"] = str(round(process_time, 4))
     response.headers["X-Request-ID"] = request_id
     
-    # Log structured request
+    # Log structured request (skip frontend polling requests)
     try:
-        db = next(get_db())
-        # Categorize service based on endpoint
-        # API endpoints (backend routes)
-        service = "api"
         endpoint_path = request.url.path
         
-        # Frontend static assets and Next.js routes
-        if endpoint_path.startswith("/_next/") or endpoint_path.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg", ".woff", ".woff2")):
-            service = "frontend"
-        # Health and status endpoints
-        elif endpoint_path in ["/health", "/"]:
-            service = "api"
-        # All other endpoints are API calls
-        else:
-            service = "api"
+        # Skip logging for frontend polling/interaction endpoints
+        skip_paths = [
+            "/logs",  # Frontend polling logs endpoint
+            "/logs/stream",  # Logs SSE stream
+            "/logs/metadata",  # Logs metadata
+            "/metrics",  # Metrics endpoint (if polled by frontend)
+            "/health",  # Health check
+        ]
         
-        log_structured(
-            db=db,
-            level="INFO" if response.status_code < 400 else "ERROR",
-            message=f"{request.method} {request.url.path} - {response.status_code}",
-            service=service,
-            request_id=request_id,
-            endpoint=endpoint_path,
-            method=request.method,
-            status_code=response.status_code,
-            latency_ms=round(process_time * 1000, 2),
-            user_agent=request.headers.get("user-agent"),
+        # Skip if path matches skip list or is a static asset
+        should_skip = (
+            endpoint_path in skip_paths or
+            endpoint_path.startswith("/_next/") or
+            endpoint_path.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg", ".woff", ".woff2"))
         )
+        
+        if not should_skip:
+            db = next(get_db())
+            # Categorize service based on endpoint
+            service = "api"
+            
+            log_structured(
+                db=db,
+                level="INFO" if response.status_code < 400 else "ERROR",
+                message=f"{request.method} {request.url.path} - {response.status_code}",
+                service=service,
+                request_id=request_id,
+                endpoint=endpoint_path,
+                method=request.method,
+                status_code=response.status_code,
+                latency_ms=round(process_time * 1000, 2),
+                user_agent=request.headers.get("user-agent"),
+            )
     except Exception:
         # Don't fail request if logging fails
         pass
