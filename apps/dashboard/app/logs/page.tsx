@@ -127,7 +127,7 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
