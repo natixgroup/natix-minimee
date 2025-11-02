@@ -96,8 +96,12 @@ async def get_llm_status(db: Session = Depends(get_db)):
         model_name = None
     
     if provider == "ollama":
-        # Get model name from settings or default to smaller model
-        ollama_model = model_name or getattr(settings, "ollama_model", "llama3.2:1b") or "llama3.2:1b"
+        # Get model name from DB settings, then fallback to config, then default
+        ollama_model = model_name
+        if not ollama_model:
+            ollama_model = getattr(settings, "ollama_model", None)
+        if not ollama_model:
+            ollama_model = "llama3.2:1b"  # Default
         return await check_ollama_model(ollama_model)
     elif provider == "openai":
         # Check if API key is configured
