@@ -29,6 +29,7 @@ interface ProgressData {
 
 export function WhatsAppUpload() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
@@ -36,19 +37,31 @@ export function WhatsAppUpload() {
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [progressData, setProgressData] = useState<ProgressData | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const validateAndSetFile = (selectedFile: File | null) => {
+    if (!selectedFile) {
+      setFile(null);
+      return false;
+    }
+
+    if (!selectedFile.name.endsWith(".txt")) {
+      toast.error("Please select a .txt file");
+      setFile(null);
+      return false;
+    }
+
+    setFile(selectedFile);
+    setUploadSuccess(false);
+    setUploadResult(null);
+    setError(null);
+    setUploadStep("idle");
+    return true;
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
-    if (selectedFile && selectedFile.name.endsWith(".txt")) {
-      setFile(selectedFile);
-      setUploadSuccess(false);
-      setUploadResult(null);
-      setError(null);
-      setUploadStep("idle");
-    } else {
-      toast.error("Please select a .txt file");
-      setFile(null);
-    }
+    validateAndSetFile(selectedFile || null);
   };
 
   const handleUpload = () => {
@@ -163,8 +176,50 @@ export function WhatsAppUpload() {
     return baseLabel + (step !== "complete" && step !== "error" ? "..." : "");
   };
 
-  const handleChooseFile = () => {
-    fileInputRef.current?.click();
+  const handleChooseFile = (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (fileInputRef.current && !isUploading) {
+      // Reset input to allow selecting same file again
+      fileInputRef.current.value = "";
+      // Use setTimeout to ensure the click happens after state updates
+      setTimeout(() => {
+        fileInputRef.current?.click();
+      }, 0);
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set dragging to false if we're leaving the drop zone itself
+    if (!dropZoneRef.current?.contains(e.relatedTarget as Node)) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const droppedFiles = e.dataTransfer.files;
+    if (droppedFiles.length > 0) {
+      validateAndSetFile(droppedFiles[0]);
+    }
   };
 
   return (
@@ -175,41 +230,104 @@ export function WhatsAppUpload() {
           type="file"
           accept=".txt"
           onChange={handleFileChange}
-          className="hidden"
+          className="absolute opacity-0 w-0 h-0 pointer-events-none"
           disabled={isUploading}
+          id="whatsapp-file-input"
         />
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleChooseFile}
-          disabled={isUploading}
-          className="w-full"
+        
+        {/* Drop Zone */}
+        <div
+          ref={dropZoneRef}
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!isUploading) {
+              handleChooseFile();
+            }
+          }}
+          className={`
+            relative border-2 border-dashed rounded-lg p-8 text-center cursor-pointer
+            transition-all duration-200
+            ${isDragging 
+              ? "border-primary bg-primary/5 scale-[1.02]" 
+              : "border-muted-foreground/25 hover:border-muted-foreground/50"
+            }
+            ${isUploading ? "opacity-50 cursor-not-allowed pointer-events-none" : ""}
+          `}
+          role="button"
+          tabIndex={isUploading ? -1 : 0}
+          onKeyDown={(e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && !isUploading) {
+              e.preventDefault();
+              handleChooseFile();
+            }
+          }}
         >
-          <FileText className="mr-2 h-4 w-4" />
-          {file ? file.name : "Choose File"}
-        </Button>
-        <p className="text-sm text-muted-foreground">
-          Select a WhatsApp conversation export (.txt file). Maximum size: 50MB.
-        </p>
-      </div>
-
-      {file && !uploadSuccess && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <FileText className="h-5 w-5 text-muted-foreground" />
-                <div>
-                  <p className="font-medium">{file.name}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {(file.size / 1024).toFixed(2)} KB
+          <div className="flex flex-col items-center gap-4">
+            <div className={`
+              rounded-full p-3
+              ${isDragging ? "bg-primary/10" : "bg-muted"}
+            `}>
+              <FileText className={`h-6 w-6 ${isDragging ? "text-primary" : "text-muted-foreground"}`} />
+            </div>
+            {file ? (
+              <div className="space-y-2 w-full">
+                <div className="flex items-center justify-center gap-2">
+                  <FileText className="h-5 w-5 text-primary" />
+                  <p className="text-sm font-medium text-primary">{file.name}</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {(file.size / 1024).toFixed(2)} KB
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFile(null);
+                    if (fileInputRef.current) {
+                      fileInputRef.current.value = "";
+                    }
+                  }}
+                  disabled={isUploading}
+                  className="text-xs"
+                >
+                  Remove file
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">
+                    <span className="text-primary">Click to upload</span> or drag and drop
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    WhatsApp conversation export (.txt file). Maximum size: 50MB
                   </p>
                 </div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    handleChooseFile(e);
+                  }}
+                  disabled={isUploading}
+                  size="sm"
+                >
+                  Browse Files
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Progress indicator with detailed info */}
       {isUploading && uploadStep !== "idle" && (
