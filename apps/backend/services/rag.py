@@ -176,11 +176,11 @@ def find_similar_messages_enhanced(
             1 - (e.vector <=> CAST(:query_vector AS vector)) as similarity,
             e.metadata->>'tags' as tags,
             CASE WHEN e.metadata->>'chunk' = 'true' THEN TRUE ELSE FALSE END as is_chunk,
-            COALESCE(m.conversation_id, e.metadata->>'conversation_id') as effective_conversation_id,
+            COALESCE(m.conversation_id, e.metadata->>'conversation_id', e.metadata->>'thread_id') as effective_conversation_id,
             COALESCE(m.user_id, (
                 SELECT DISTINCT msg.user_id 
                 FROM messages msg 
-                WHERE msg.conversation_id = COALESCE(m.conversation_id, e.metadata->>'conversation_id')
+                WHERE msg.conversation_id = COALESCE(m.conversation_id, e.metadata->>'conversation_id', e.metadata->>'thread_id')
                 LIMIT 1
             )) as effective_user_id
         FROM embeddings e
@@ -195,15 +195,15 @@ def find_similar_messages_enhanced(
         "limit": limit
     }
     
-    # Filter by user_id: for messages use m.user_id, for chunks use conversation_id from metadata
-    # Note: Chunks without conversation_id in metadata (old chunks) won't be filtered by user_id
+    # Filter by user_id: for messages use m.user_id, for chunks use conversation_id/thread_id from metadata
+    # Note: Chunks without conversation_id/thread_id in metadata (old chunks) won't be filtered by user_id
     # This is acceptable if all data belongs to the same user or for backward compatibility
     if user_id:
         query_sql += """ AND (
             m.user_id = :user_id 
             OR (e.metadata->>'chunk' = 'true' AND EXISTS (
                 SELECT 1 FROM messages msg 
-                WHERE msg.conversation_id = COALESCE(m.conversation_id, e.metadata->>'conversation_id')
+                WHERE msg.conversation_id = COALESCE(m.conversation_id, e.metadata->>'conversation_id', e.metadata->>'thread_id')
                 AND msg.user_id = :user_id
             ))
         )"""

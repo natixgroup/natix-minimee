@@ -199,6 +199,7 @@ def index_gmail_thread(
                 'tags': chunk.get('tags', ''),
                 'source': 'gmail',
                 'thread_id': thread_id,
+                'conversation_id': thread_id,  # For Gmail, conversation_id = thread_id
             }
             
             embedding = store_embedding(
