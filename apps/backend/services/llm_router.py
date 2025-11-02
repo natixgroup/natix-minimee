@@ -15,6 +15,41 @@ from services.action_logger import log_action_context, log_action
 from sqlalchemy.orm import Session
 
 
+def get_llm_provider_from_db(db: Optional[Session] = None) -> tuple[str, Optional[str]]:
+    """
+    Get LLM provider and model from database settings, fallback to config
+    Returns: (provider, model_name)
+    """
+    if db:
+        try:
+            from models import Setting
+            llm_setting = db.query(Setting).filter(
+                Setting.key == "llm_provider",
+                Setting.user_id == None
+            ).first()
+            
+            if llm_setting and isinstance(llm_setting.value, dict):
+                provider = llm_setting.value.get("provider", settings.llm_provider).lower()
+                model_name = llm_setting.value.get("model")
+                return provider, model_name
+        except Exception:
+            pass  # Fallback to config
+    
+    # Fallback to config
+    provider = settings.llm_provider.lower()
+    model_name = None
+    
+    # Get default model from config
+    if provider == "ollama":
+        model_name = settings.ollama_model
+    elif provider == "vllm":
+        model_name = getattr(settings, "vllm_model", None)
+    elif provider == "openai":
+        model_name = getattr(settings, "openai_model", "gpt-4o")
+    
+    return provider, model_name
+
+
 async def generate_llm_response(
     prompt: str,
     model: Optional[str] = None,
@@ -28,17 +63,18 @@ async def generate_llm_response(
     """
     Generate response using configured LLM provider
     Tracks metrics: latency, provider, success/failure
+    Reads provider and model from DB settings if available
     """
-    provider = settings.llm_provider.lower()
+    # Get provider from DB settings if available
+    provider, default_model_from_db = get_llm_provider_from_db(db)
     
-    # Déterminer le modèle utilisé
+    # Déterminer le modèle utilisé (paramètre > DB > config > default)
     if provider == "ollama":
-        actual_model = model or "llama3.2:1b"
+        actual_model = model or default_model_from_db or settings.ollama_model or "llama3.2:1b"
     elif provider == "vllm":
-        actual_model = model or "mistral-7b-instruct-v0.1"
+        actual_model = model or default_model_from_db or "mistral-7b-instruct-v0.1"
     elif provider == "openai":
-        # Default to gpt-4o (Standard level) if no model specified
-        actual_model = model or "gpt-4o"
+        actual_model = model or default_model_from_db or "gpt-4o"
     else:
         actual_model = model or "unknown"
     
@@ -61,11 +97,11 @@ async def generate_llm_response(
         ) as log:
             try:
                 if provider == "ollama":
-                    result = await _generate_ollama(prompt, model, temperature, max_tokens)
+                    result = await _generate_ollama(prompt, actual_model, temperature, max_tokens)
                 elif provider == "vllm":
-                    result = await _generate_vllm(prompt, model, temperature, max_tokens)
+                    result = await _generate_vllm(prompt, actual_model, temperature, max_tokens)
                 elif provider == "openai":
-                    result = await _generate_openai(prompt, model, temperature, max_tokens)
+                    result = await _generate_openai(prompt, actual_model, temperature, max_tokens)
                 else:
                     raise ValueError(f"Unknown LLM provider: {provider}")
                 
@@ -90,11 +126,11 @@ async def generate_llm_response(
         # Sans DB, pas de logging mais on continue
         try:
             if provider == "ollama":
-                result = await _generate_ollama(prompt, model, temperature, max_tokens)
+                result = await _generate_ollama(prompt, actual_model, temperature, max_tokens)
             elif provider == "vllm":
-                result = await _generate_vllm(prompt, model, temperature, max_tokens)
+                result = await _generate_vllm(prompt, actual_model, temperature, max_tokens)
             elif provider == "openai":
-                result = await _generate_openai(prompt, model, temperature, max_tokens)
+                result = await _generate_openai(prompt, actual_model, temperature, max_tokens)
             else:
                 raise ValueError(f"Unknown LLM provider: {provider}")
             return result
@@ -248,29 +284,31 @@ async def generate_llm_response_stream(
     Yields tokens one by one as they are generated
     Yields {"token": "...", "done": false} for each token
     Finally yields {"done": true, "response": "...", "actions": [...]} when complete
+    Reads provider and model from DB settings if available
     """
-    provider = settings.llm_provider.lower()
+    # Get provider from DB settings if available
+    provider, default_model_from_db = get_llm_provider_from_db(db)
     
-    # Déterminer le modèle utilisé
+    # Déterminer le modèle utilisé (paramètre > DB > config > default)
     if provider == "ollama":
-        actual_model = model or "llama3.2:1b"
+        actual_model = model or default_model_from_db or settings.ollama_model or "llama3.2:1b"
     elif provider == "vllm":
-        actual_model = model or "mistral-7b-instruct-v0.1"
+        actual_model = model or default_model_from_db or "mistral-7b-instruct-v0.1"
     elif provider == "openai":
-        actual_model = model or "gpt-4o"
+        actual_model = model or default_model_from_db or "gpt-4o"
     else:
         actual_model = model or "unknown"
     
     try:
         if provider == "ollama":
-            async for token_data in _generate_ollama_stream(prompt, model, temperature, max_tokens):
+            async for token_data in _generate_ollama_stream(prompt, actual_model, temperature, max_tokens):
                 yield token_data
         elif provider == "vllm":
             # vLLM uses Ollama-compatible API
-            async for token_data in _generate_vllm_stream(prompt, model, temperature, max_tokens):
+            async for token_data in _generate_vllm_stream(prompt, actual_model, temperature, max_tokens):
                 yield token_data
         elif provider == "openai":
-            async for token_data in _generate_openai_stream(prompt, model, temperature, max_tokens):
+            async for token_data in _generate_openai_stream(prompt, actual_model, temperature, max_tokens):
                 yield token_data
         else:
             raise ValueError(f"Unknown LLM provider: {provider}")
@@ -289,7 +327,8 @@ async def _generate_ollama_stream(
     max_tokens: Optional[int] = None
 ):
     """Generate using Ollama with streaming"""
-    model = model or "llama3.2:1b"
+    # Model should be provided by caller (from DB settings), but fallback for safety
+    model = model or settings.ollama_model or "llama3.2:1b"
     base_url = settings.ollama_base_url
     
     client = await _get_ollama_client()
@@ -336,7 +375,8 @@ async def _generate_vllm_stream(
     max_tokens: Optional[int] = None
 ):
     """Generate using vLLM with streaming (Ollama-compatible API)"""
-    model = model or "mistral-7b-instruct-v0.1"
+    # Model should be provided by caller, but fallback for safety
+    model = model or getattr(settings, "vllm_model", None) or "mistral-7b-instruct-v0.1"
     base_url = settings.vllm_base_url
     
     # vLLM uses Ollama-compatible API, so same logic

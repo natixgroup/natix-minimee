@@ -704,7 +704,7 @@ class ApiClient {
     userId: number,
     conversationId?: string,
     onToken?: (token: string) => void,
-    onComplete?: (response: string, actions: any[]) => void,
+    onComplete?: (response: string, actions: any[], debugInfo?: any) => void,
     onError?: (error: Error) => void
   ) {
     try {
@@ -749,7 +749,7 @@ class ApiClient {
                 onToken(data.token);
               } else if (data.type === "done") {
                 if (onComplete) {
-                  onComplete(data.response || "", data.actions || []);
+                  onComplete(data.response || "", data.actions || [], data.debug);
                 }
                 return;
               } else if (data.type === "error") {

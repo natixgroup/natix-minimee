@@ -18,7 +18,7 @@ import QRCode from 'qrcode';
 import express from 'express';
 import cors from 'cors';
 import { logger, logMessage, logConnection } from './logger.js';
-import { sendMessageToBackend, checkBackendHealth, getPendingApprovalByGroupMessageId, sendApprovalResponse } from './webhook.js';
+import { sendMessageToBackend, checkBackendHealth, getPendingApprovalByGroupMessageId, sendApprovalResponse, sendDirectChatToBackend, sendMessageToBackendForDisplay } from './webhook.js';
 import { initializeMinimeeTeam } from './groups.js';
 
 dotenv.config();
@@ -211,6 +211,16 @@ async function startBridge() {
           const isGroup = msg.key.remoteJid.includes('@g.us');
           const messageText = extractMessageText(msg.message || {});
           
+          // Skip if no message text
+          if (!messageText) {
+            continue;
+          }
+          
+          // Skip messages with [🤖 Minimee] prefix to avoid loops
+          if (messageText.startsWith('[🤖 Minimee]')) {
+            continue;
+          }
+          
           // Handle group messages (Minimee TEAM)
           if (isGroup) {
             // Get group name
@@ -220,11 +230,6 @@ async function startBridge() {
               
               // Only process messages from Minimee TEAM group
               if (groupName === 'Minimee TEAM') {
-                // Filter messages with [🤖 Minimee] prefix to avoid processing our own messages
-                if (messageText && messageText.startsWith('[🤖 Minimee]')) {
-                  continue;
-                }
-                
                 // Check if this is a button response
                 let approvalChoice = null;
                 let messageId = null;
@@ -267,7 +272,7 @@ async function startBridge() {
                   }
                 }
                 
-                // If we found a valid choice, forward to backend
+                // If we found a valid choice, forward to backend for approval processing
                 if (approvalChoice !== null) {
                   try {
                     const groupMessageId = msg.key.id;
@@ -349,6 +354,8 @@ async function startBridge() {
                       result: result.status,
                       approvalType,
                     }, 'Approval response sent to backend');
+                    
+                    continue; // Approval processed, don't treat as regular message
                   } catch (error) {
                     logger.error({ 
                       error: error.message,
@@ -358,7 +365,80 @@ async function startBridge() {
                   }
                 }
                 
-                continue; // Don't process group messages as regular messages
+                // For other messages in Minimee TEAM group (including user's own messages)
+                // Send to backend for display in dashboard and as direct chat with Minimee
+                logger.info({
+                  messageText: messageText.substring(0, 50),
+                  groupName,
+                  fromMe: msg.key.fromMe,
+                }, 'Message from Minimee TEAM group (direct chat, not approval response)');
+                
+                // Use same conversation_id as dashboard to display messages together
+                // Dashboard uses "dashboard-user-{userId}", so use that instead of "minimee-team-{userId}"
+                const conversationId = `dashboard-user-${USER_ID}`;
+                // For user's own messages (fromMe), always use "User" as sender to match dashboard expectations
+                // For messages from others, use their name
+                const senderName = msg.key.fromMe 
+                  ? 'User' 
+                  : (msg.pushName || msg.key.participant?.split('@')[0] || 'User');
+                const messageTimestamp = new Date(msg.messageTimestamp ? msg.messageTimestamp * 1000 : Date.now()).toISOString();
+                
+                // Only process as direct chat if NOT from the user themselves (fromMe)
+                // This avoids Minimee responding to its own messages
+                if (!msg.key.fromMe) {
+                  try {
+                    // Send to backend chat endpoint (not message endpoint to avoid generating approval options)
+                    // This will create the message in DB, generate embedding, and broadcast via WebSocket
+                    const chatResponse = await sendDirectChatToBackend({
+                      content: messageText,
+                      sender: senderName,
+                      timestamp: messageTimestamp,
+                      source: 'whatsapp',
+                      conversation_id: conversationId,
+                      user_id: USER_ID,
+                    });
+                    
+                    // If backend returned a response, send it back to the group
+                    if (chatResponse && chatResponse.response) {
+                      const groupJid = msg.key.remoteJid;
+                      // Add prefix to identify Minimee messages and avoid loops
+                      const responseWithPrefix = `[🤖 Minimee] ${chatResponse.response}`;
+                      await sock.sendMessage(groupJid, { 
+                        text: responseWithPrefix,
+                      });
+                      
+                      logger.info({
+                        responseLength: chatResponse.response.length,
+                        conversationId,
+                      }, 'Direct chat response sent to Minimee TEAM group');
+                    }
+                  } catch (error) {
+                    logger.error({ 
+                      error: error.message,
+                      stack: error.stack,
+                    }, 'Error processing direct chat message from Minimee TEAM group');
+                  }
+                } else {
+                  // For user's own messages (fromMe), just store for display without generating response
+                  // Use display-only endpoint to avoid duplicate embeddings (chat/direct already creates one)
+                  try {
+                    await sendMessageToBackendForDisplay({
+                      content: messageText,
+                      sender: senderName,
+                      timestamp: messageTimestamp,
+                      source: 'whatsapp',
+                      conversation_id: conversationId,
+                      user_id: USER_ID,
+                      fromMe: msg.key.fromMe,
+                    });
+                  } catch (error) {
+                    logger.warn({ 
+                      error: error.message,
+                    }, 'Error broadcasting user message to dashboard');
+                  }
+                }
+                
+                continue; // Don't process as regular incoming message
               }
               
               // Skip other groups
@@ -368,16 +448,6 @@ async function startBridge() {
               logger.warn({ error: error.message }, 'Error getting group metadata');
               continue;
             }
-          }
-
-          // Skip own messages (non-group)
-          if (!messageText) {
-            continue;
-          }
-          
-          // Skip messages with [🤖 Minimee] prefix to avoid loops
-          if (messageText.startsWith('[🤖 Minimee]')) {
-            continue;
           }
 
           const sender = msg.key.remoteJid;

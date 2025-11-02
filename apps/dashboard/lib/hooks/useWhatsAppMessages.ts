@@ -15,6 +15,7 @@ export function useWhatsAppMessages({ enabled, onMessage }: UseWhatsAppMessagesO
     // Convert http:// to ws:// and https:// to wss://
     const wsUrl = apiUrl.replace(/^http/, "ws") + "/minimee/ws";
     
+    console.log("Connecting to WebSocket:", wsUrl);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
@@ -33,10 +34,17 @@ export function useWhatsAppMessages({ enabled, onMessage }: UseWhatsAppMessagesO
     };
 
     ws.onmessage = (event) => {
+      // Handle keepalive "pong" first (not JSON)
+      if (event.data === "pong") {
+        // Keepalive response, do nothing
+        return;
+      }
+
       try {
         const data = JSON.parse(event.data);
         
         if (data.type === "whatsapp_message" && data.data) {
+          console.log("Received WhatsApp message via WebSocket:", data.data);
           const message: ChatMessage = {
             id: data.data.id,
             content: data.data.content,
@@ -46,27 +54,33 @@ export function useWhatsAppMessages({ enabled, onMessage }: UseWhatsAppMessagesO
             conversation_id: data.data.conversation_id,
           };
           onMessage(message);
-        } else if (data === "pong") {
-          // Keepalive response, do nothing
+        } else {
+          console.log("Received other WebSocket message:", data);
         }
       } catch (error) {
-        console.error("Error parsing WebSocket message:", error);
+        // Ignore JSON parse errors for non-JSON messages
+        if (event.data !== "pong") {
+          console.error("Error parsing WebSocket message:", error, "Data:", event.data);
+        }
       }
     };
 
     ws.onerror = (error) => {
       console.error("WebSocket error:", error);
+      // Log connection error details
+      console.error("WebSocket URL:", wsUrl);
+      console.error("WebSocket readyState:", ws.readyState);
     };
 
-    ws.onclose = () => {
-      console.log("WebSocket disconnected");
-      // Attempt to reconnect after 5 seconds
-      setTimeout(() => {
-        if (enabled) {
+    ws.onclose = (event) => {
+      console.log("WebSocket disconnected", { code: event.code, reason: event.reason, wasClean: event.wasClean });
+      // Attempt to reconnect after 5 seconds if not a clean close
+      if (!event.wasClean && enabled) {
+        setTimeout(() => {
           // Reconnect by re-running effect
           // This will be handled by the useEffect dependency
-        }
-      }, 5000);
+        }, 5000);
+      }
     };
 
     return () => {

@@ -7,12 +7,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Send, Loader2, MessageSquare } from "lucide-react";
+import { Send, Loader2, MessageSquare, Info } from "lucide-react";
 import { toast } from "sonner";
 import { useChatStream } from "@/lib/hooks/useChatStream";
 import { useConversationHistory, type ChatMessage } from "@/lib/hooks/useConversationHistory";
 import { useWhatsAppMessages } from "@/lib/hooks/useWhatsAppMessages";
 import { ApprovalDialog, type MessageOptions } from "./ApprovalDialog";
+import { DebugModal } from "./DebugModal";
 
 interface ChatInterfaceProps {
   userId: number;
@@ -22,11 +23,13 @@ interface ChatInterfaceProps {
 export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [showWhatsApp, setShowWhatsApp] = useState(false);
+  const [showWhatsApp, setShowWhatsApp] = useState(true); // Default to true to show WhatsApp messages
   const [streamingMessage, setStreamingMessage] = useState("");
   const [actions, setActions] = useState<any[]>([]);
   const [messageOptions, setMessageOptions] = useState<MessageOptions | null>(null);
   const [showApprovalDialog, setShowApprovalDialog] = useState(false);
+  const [debugInfos, setDebugInfos] = useState<Map<number, any>>(new Map());
+  const [selectedDebugMessageId, setSelectedDebugMessageId] = useState<number | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -41,20 +44,40 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
   // Load history when available
   useEffect(() => {
     if (historyData) {
-      setMessages(historyData);
+      // Sort messages by timestamp to ensure correct order
+      const sorted = [...historyData].sort((a, b) => {
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        return timeA - timeB;
+      });
+      setMessages(sorted);
     }
   }, [historyData]);
 
   // Handle WhatsApp messages received via WebSocket
   const handleWhatsAppMessage = useCallback((message: ChatMessage) => {
+    console.log("handleWhatsAppMessage called with:", message);
+    // Only add messages for this conversation
+    if (message.conversation_id !== conversationId) {
+      console.log("Message conversation_id mismatch, skipping:", message.conversation_id, "expected:", conversationId);
+      return;
+    }
     setMessages((prev) => {
       // Avoid duplicates
       if (prev.some((m) => m.id === message.id)) {
+        console.log("Message already exists, skipping:", message.id);
         return prev;
       }
-      return [...prev, message];
+      console.log("Adding WhatsApp message to chat:", message);
+      // Add message and sort by timestamp to maintain chronological order
+      const updated = [...prev, message];
+      return updated.sort((a, b) => {
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        return timeA - timeB;
+      });
     });
-  }, []);
+  }, [conversationId]);
 
   // Connect to WebSocket for WhatsApp messages
   useWhatsAppMessages({
@@ -98,7 +121,7 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
       (token) => {
         setStreamingMessage((prev) => prev + token);
       },
-      (response, responseActions) => {
+      (response, responseActions, debugInfo) => {
         const minimeeMessage: ChatMessage = {
           id: Date.now() + 1, // Temporary ID
           content: response,
@@ -111,6 +134,15 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
         setMessages((prev) => [...prev, minimeeMessage]);
         setStreamingMessage("");
         
+        // Store debug info
+        if (debugInfo) {
+          setDebugInfos((prev) => {
+            const newMap = new Map(prev);
+            newMap.set(minimeeMessage.id, debugInfo);
+            return newMap;
+          });
+        }
+        
         if (responseActions && responseActions.length > 0) {
           setActions(responseActions);
           setMessageOptions({
@@ -120,6 +152,11 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
           });
           setShowApprovalDialog(true);
         }
+        
+        // Remettre le focus sur l'input après la réponse
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 100);
       }
     );
   }, [input, userId, conversationId, isStreaming, sendMessage]);
@@ -135,6 +172,11 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
   const displayedMessages = showWhatsApp
     ? messages
     : messages.filter((msg) => msg.source !== "whatsapp");
+  
+  // Debug log
+  useEffect(() => {
+    console.log("Messages state:", messages.length, "Displayed:", displayedMessages.length, "ShowWhatsApp:", showWhatsApp);
+  }, [messages, displayedMessages, showWhatsApp]);
 
   return (
     <div className="flex flex-col h-full">
@@ -171,25 +213,39 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
                   <div
                     key={msg.id}
                     className={`flex ${
-                      msg.sender === "User" || msg.source === "whatsapp"
+                      msg.sender === "User" || (msg.source === "whatsapp" && msg.sender !== "Minimee")
                         ? "justify-end"
                         : "justify-start"
                     }`}
                   >
                     <div
-                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                        msg.sender === "User" || msg.source === "whatsapp"
+                      className={`max-w-[80%] rounded-lg px-4 py-2 relative ${
+                        msg.sender === "User" || (msg.source === "whatsapp" && msg.sender !== "Minimee")
                           ? "bg-primary text-primary-foreground"
                           : "bg-muted"
                       }`}
                     >
+                      {/* Show WhatsApp badge for all WhatsApp messages */}
                       {msg.source === "whatsapp" && (
                         <Badge variant="secondary" className="mb-1 text-xs">
                           WhatsApp
                         </Badge>
                       )}
                       {msg.sender === "Minimee" && (
-                        <div className="text-xs font-semibold mb-1">Minimee:</div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-xs font-semibold">Minimee:</div>
+                          {debugInfos.has(msg.id) && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              onClick={() => setSelectedDebugMessageId(msg.id)}
+                            >
+                              <Info className="h-3 w-3 mr-1" />
+                              Debug
+                            </Button>
+                          )}
+                        </div>
                       )}
                       <div className="whitespace-pre-wrap">{msg.content}</div>
                       <div className="text-xs opacity-70 mt-1">
@@ -260,6 +316,15 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
           setMessageOptions(null);
           setActions([]);
         }}
+      />
+
+      {/* Debug modal */}
+      <DebugModal
+        open={selectedDebugMessageId !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelectedDebugMessageId(null);
+        }}
+        debugInfo={selectedDebugMessageId ? debugInfos.get(selectedDebugMessageId) || null : null}
       />
     </div>
   );

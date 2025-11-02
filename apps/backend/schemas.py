@@ -275,6 +275,9 @@ class ChatMessageRequest(BaseModel):
     content: str
     user_id: int
     conversation_id: Optional[str] = None
+    sender: Optional[str] = "User"
+    source: Optional[str] = "dashboard"
+    timestamp: Optional[str] = None
 
 
 class ChatMessageResponse(BaseModel):

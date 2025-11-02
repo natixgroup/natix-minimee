@@ -378,9 +378,11 @@ async def process_message_approval(
         # Send message via bridge
         try:
             start_time = datetime.utcnow()
+            # Add prefix to identify Minimee messages and avoid loops
+            message_with_prefix = f"[🤖 Minimee] {selected_option}"
             bridge_response = await send_message_via_bridge(
                 recipient=recipient,
-                message_text=selected_option,
+                message_text=message_with_prefix,
                 source=pending_approval.source,
                 db=db
             )

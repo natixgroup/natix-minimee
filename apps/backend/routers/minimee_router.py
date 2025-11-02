@@ -2,6 +2,7 @@
 Core Minimee messaging endpoints
 """
 import json
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -16,11 +17,53 @@ from services.logs_service import log_to_db
 from services.action_logger import log_action, generate_request_id
 from services.rag import retrieve_context, build_prompt_with_context
 from services.agent_manager import select_agent_for_context
-from services.llm_router import generate_llm_response_stream
+from services.llm_router import generate_llm_response_stream, generate_llm_response
 from services.websocket_manager import websocket_manager
 from config import settings
 
 router = APIRouter()
+
+
+@router.post("/minimee/message/display-only")
+async def display_message_only(
+    message_data: MessageCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Store message in DB and broadcast via WebSocket for display only
+    Does not generate response options - used for user's own messages in Minimee TEAM group
+    """
+    try:
+        # Store message in DB
+        message = Message(**message_data.model_dump())
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+        
+        # Don't generate embedding for display-only messages to avoid duplicates
+        # Embeddings are already created when messages are processed normally
+        # (via /minimee/chat/direct or /minimee/message endpoints)
+        
+        # Broadcast WhatsApp message via WebSocket if source is whatsapp
+        if message_data.source == "whatsapp":
+            await websocket_manager.broadcast_whatsapp_message({
+                "id": message.id,
+                "content": message.content,
+                "sender": message.sender,
+                "timestamp": message.timestamp.isoformat(),
+                "source": message.source,
+                "conversation_id": message.conversation_id,
+            })
+        
+        return {
+            "message_id": message.id,
+            "status": "displayed"
+        }
+    
+    except Exception as e:
+        db.rollback()
+        log_to_db(db, "ERROR", f"Display-only message error: {str(e)}", service="minimee")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/minimee/message", response_model=MessageOptions)
@@ -444,11 +487,12 @@ async def chat_stream(
             db.commit()
             
             # 3. Retrieve context using RAG
-            context = retrieve_context(
+            context, rag_details = retrieve_context(
                 db,
                 chat_request.content,
                 chat_request.user_id,
-                request_id=request_id
+                request_id=request_id,
+                return_details=True
             )
             
             # 4. Select appropriate agent
@@ -464,6 +508,18 @@ async def chat_stream(
             
             full_prompt = build_prompt_with_context(chat_request.content, context, user_style=None)
             full_prompt = f"{system_prompt}\n\n{full_prompt}"
+            
+            # 6. Get LLM provider info from DB settings
+            from services.llm_router import get_llm_provider_from_db
+            llm_provider, llm_model_from_db = get_llm_provider_from_db(db)
+            llm_model = llm_model_from_db
+            if not llm_model:
+                if llm_provider == "ollama":
+                    llm_model = settings.ollama_model or "llama3.2:1b"
+                elif llm_provider == "vllm":
+                    llm_model = "vLLM (RunPod)"
+                elif llm_provider == "openai":
+                    llm_model = "gpt-4o"
             
             # 6. Stream LLM response
             full_response = ""
@@ -506,8 +562,8 @@ async def chat_stream(
                     store_embedding(db, minimee_message.content, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id)
                     db.commit()
                     
-                    # 9. Send final event
-                    yield f"data: {json.dumps({'type': 'done', 'response': final_response, 'actions': actions, 'message_id': minimee_message.id})}\n\n"
+                    # 9. Send final event with debug info
+                    yield f"data: {json.dumps({'type': 'done', 'response': final_response, 'actions': actions, 'message_id': minimee_message.id, 'debug': {'llm_provider': llm_provider, 'llm_model': llm_model, 'rag_context': context, 'rag_details': rag_details}})}\n\n"
                     break
                     
         except Exception as e:
@@ -523,6 +579,121 @@ async def chat_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.post("/minimee/chat/direct")
+async def chat_direct(
+    chat_request: ChatMessageRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Direct chat endpoint for WhatsApp messages from Minimee TEAM group
+    Returns a direct response without generating approval options
+    Similar to /minimee/chat/stream but synchronous and non-streaming
+    """
+    request_id = generate_request_id()
+    conversation_id = chat_request.conversation_id or f"minimee-team-{chat_request.user_id}"
+    
+    try:
+        # 1. Store user message in DB
+        message_timestamp = datetime.fromisoformat(chat_request.timestamp.replace('Z', '+00:00')) if chat_request.timestamp else datetime.utcnow()
+        user_message = Message(
+            content=chat_request.content,
+            sender=chat_request.sender or "User",
+            timestamp=message_timestamp,
+            source=chat_request.source or "whatsapp",
+            conversation_id=conversation_id,
+            user_id=chat_request.user_id
+        )
+        db.add(user_message)
+        db.commit()
+        db.refresh(user_message)
+        
+        # 2. Generate embedding for user message
+        store_embedding(db, user_message.content, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id)
+        db.commit()
+        
+        # 3. Retrieve context using RAG
+        context, rag_details = retrieve_context(
+            db,
+            chat_request.content,
+            chat_request.user_id,
+            request_id=request_id,
+            return_details=True
+        )
+        
+        # 4. Select appropriate agent
+        agent = select_agent_for_context(db, chat_request.content, chat_request.user_id)
+        
+        # 5. Build prompt
+        if agent:
+            system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
+            if agent.style:
+                system_prompt += f"\nCommunication style: {agent.style}"
+        else:
+            system_prompt = "You are Minimee, a personal AI assistant."
+        
+        full_prompt = build_prompt_with_context(chat_request.content, context, user_style=None)
+        full_prompt = f"{system_prompt}\n\n{full_prompt}"
+        
+        # 6. Generate LLM response (non-streaming, synchronous)
+        response = await generate_llm_response(
+            full_prompt,
+            temperature=0.7,
+            max_tokens=512,
+            db=db,
+            request_id=request_id,
+            message_id=user_message.id,
+            user_id=chat_request.user_id
+        )
+        
+        # 7. Store Minimee response in DB
+        minimee_message = Message(
+            content=response,
+            sender="Minimee",
+            timestamp=datetime.utcnow(),
+            source="minimee",
+            conversation_id=conversation_id,
+            user_id=chat_request.user_id
+        )
+        db.add(minimee_message)
+        db.commit()
+        db.refresh(minimee_message)
+        
+        # 8. Generate embedding for Minimee response
+        store_embedding(db, minimee_message.content, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id)
+        db.commit()
+        
+        # 9. Broadcast to WebSocket if source is whatsapp
+        if chat_request.source == "whatsapp":
+            await websocket_manager.broadcast_whatsapp_message({
+                "id": user_message.id,
+                "content": user_message.content,
+                "sender": user_message.sender,
+                "timestamp": user_message.timestamp.isoformat(),
+                "source": user_message.source,
+                "conversation_id": user_message.conversation_id,
+            })
+            
+            # Also broadcast Minimee's response (keep source as "whatsapp" to show badge)
+            await websocket_manager.broadcast_whatsapp_message({
+                "id": minimee_message.id,
+                "content": minimee_message.content,
+                "sender": "Minimee",
+                "timestamp": minimee_message.timestamp.isoformat(),
+                "source": "whatsapp",  # Keep as whatsapp to show badge in dashboard
+                "conversation_id": minimee_message.conversation_id,
+            })
+        
+        return {
+            "response": response,
+            "message_id": minimee_message.id,
+            "conversation_id": conversation_id
+        }
+        
+    except Exception as e:
+        log_to_db(db, "ERROR", f"Direct chat error: {str(e)}", service="minimee", request_id=request_id)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/minimee/conversations/{conversation_id}/messages", response_model=list[ChatMessageResponse])

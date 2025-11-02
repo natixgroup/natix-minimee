@@ -187,6 +187,114 @@ export async function sendApprovalResponse(messageId, optionIndex, action = 'yes
 }
 
 /**
+ * Send message to backend for display only (no processing/response)
+ * Used for user's own messages in Minimee TEAM group
+ */
+export async function sendMessageToBackendForDisplay(messageData) {
+  const endpoint = `${BACKEND_API_URL}/minimee/message/display-only`;
+  
+  try {
+    logWebhook('send', '/minimee/message/display-only', {
+      sender: messageData.sender,
+      conversationId: messageData.conversation_id,
+      fromMe: messageData.fromMe,
+    });
+
+    const response = await axios.post(
+      endpoint,
+      {
+        content: messageData.content,
+        sender: messageData.sender,
+        timestamp: messageData.timestamp,
+        source: messageData.source || 'whatsapp',
+        conversation_id: messageData.conversation_id,
+        user_id: messageData.user_id,
+        fromMe: messageData.fromMe,
+      },
+      {
+        timeout: 10000, // 10 seconds (faster, just for display)
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    logWebhook('receive', '/minimee/message/display-only', {
+      status: 'success',
+    });
+
+    return response.data;
+  } catch (error) {
+    // Don't throw error for display-only messages - just log
+    logWebhook('send', '/minimee/message/display-only', {
+      status: 'error',
+      error: error.message,
+    });
+    // Return null instead of throwing to avoid breaking the flow
+    return null;
+  }
+}
+
+/**
+ * Send direct chat message to backend (for Minimee TEAM group conversations)
+ * This is a direct chat with Minimee, not a message that needs approval
+ */
+export async function sendDirectChatToBackend(chatData) {
+  const endpoint = `${BACKEND_API_URL}/minimee/chat/direct`;
+  
+  try {
+    logWebhook('send', '/minimee/chat/direct', {
+      sender: chatData.sender,
+      conversationId: chatData.conversation_id,
+    });
+
+    const response = await axios.post(
+      endpoint,
+      {
+        content: chatData.content,
+        sender: chatData.sender,
+        timestamp: chatData.timestamp,
+        source: chatData.source || 'whatsapp',
+        conversation_id: chatData.conversation_id,
+        user_id: chatData.user_id,
+      },
+      {
+        timeout: 30000, // 30 seconds
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    logWebhook('receive', '/minimee/chat/direct', {
+      status: 'success',
+      hasResponse: !!response.data.response,
+    });
+
+    return response.data;
+  } catch (error) {
+    logWebhook('send', '/minimee/chat/direct', {
+      status: 'error',
+      error: error.message,
+    });
+
+    if (error.response) {
+      logger.error({
+        status: error.response.status,
+        data: error.response.data,
+      }, 'Backend chat API error');
+      throw new Error(`Backend chat API error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    } else if (error.request) {
+      logger.error('No response from backend chat API');
+      throw new Error('Backend chat API not reachable');
+    } else {
+      logger.error({ error: error.message }, 'Error sending chat to backend');
+      throw error;
+    }
+  }
+}
+
+/**
  * Health check backend
  */
 export async function checkBackendHealth() {

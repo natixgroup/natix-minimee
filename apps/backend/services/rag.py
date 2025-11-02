@@ -4,7 +4,7 @@ Enhanced with top-k similarity search and chunk support
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Union
 from services.embeddings import generate_embedding, find_similar_messages
 from services.logs_service import log_to_db
 from services.metrics import record_rag_hit
@@ -21,8 +21,9 @@ def retrieve_context(
     use_chunks: bool = True,
     sender: Optional[str] = None,
     recipient: Optional[str] = None,
-    request_id: Optional[str] = None
-) -> str:
+    request_id: Optional[str] = None,
+    return_details: bool = False
+) -> Union[str, Tuple[str, Dict]]:
     """
     Retrieve relevant conversation context using RAG with top-k similarity
     Returns formatted context string for LLM prompt
@@ -111,10 +112,34 @@ def retrieve_context(
                 context_parts.append(context_line)
         
         context = "\n".join(context_parts)
+        
+        if return_details:
+            # Return context + debug details
+            details = {
+                "results_count": len(similar_results),
+                "top_similarity": similar_results[0]['similarity'] if similar_results else 0,
+                "avg_similarity": avg_similarity if similar_results else 0,
+                "results": [
+                    {
+                        "content": r['message'].content if r.get('message') else "",
+                        "sender": r['message'].sender if r.get('message') else "",
+                        "timestamp": r['message'].timestamp.isoformat() if r.get('message') and r['message'].timestamp else "",
+                        "source": r['message'].source if r.get('message') else "",
+                        "similarity": r['similarity'],
+                        "summary": r.get('summary'),
+                        "tags": r.get('tags'),
+                    }
+                    for r in similar_results
+                ]
+            }
+            return context, details
+        
         return context
     
     except Exception as e:
         log_to_db(db, "ERROR", f"RAG retrieval error: {str(e)}", service="rag")
+        if return_details:
+            return "Error retrieving context.", {"results_count": 0, "top_similarity": 0, "avg_similarity": 0, "results": []}
         return "Error retrieving context."
 
 
