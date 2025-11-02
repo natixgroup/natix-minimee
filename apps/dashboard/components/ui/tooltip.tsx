@@ -47,31 +47,31 @@ TooltipTrigger.displayName = "TooltipTrigger"
 const TooltipContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement> & { side?: "top" | "right" | "bottom" | "left"; sideOffset?: number }
->(({ className, side = "top", sideOffset = 4, children, ...props }, ref) => {
+>(({ className, side = "right", sideOffset = 8, children, ...props }, ref) => {
   const context = React.useContext(TooltipContext)
   if (!context || !context.open) return null
   
   const sideClasses = {
-    top: "bottom-full left-0 mb-2",
-    right: "left-full top-0 ml-2",
-    bottom: "top-full left-0 mt-2",
-    left: "right-full top-0 mr-2",
+    top: "bottom-full left-1/2 -translate-x-1/2 mb-2",
+    right: "left-full top-1/2 -translate-y-1/2 ml-2",
+    bottom: "top-full left-1/2 -translate-x-1/2 mt-2",
+    left: "right-full top-1/2 -translate-y-1/2 mr-2",
   }
   
   return (
     <div
       ref={ref}
       className={cn(
-        "absolute z-50 overflow-hidden rounded-md border bg-popover shadow-md",
+        "absolute z-[9999] overflow-hidden rounded-md border bg-popover shadow-lg text-popover-foreground",
         sideClasses[side],
         className
       )}
       style={{ 
-        marginLeft: side === "left" ? `${sideOffset}px` : undefined, 
-        marginRight: side === "right" ? `${sideOffset}px` : undefined, 
-        marginTop: side === "bottom" ? `${sideOffset}px` : undefined, 
-        marginBottom: side === "top" ? `${sideOffset}px` : undefined 
+        minWidth: side === "right" || side === "left" ? "400px" : undefined,
+        maxWidth: side === "right" || side === "left" ? "600px" : "80vw",
       }}
+      onMouseEnter={() => context.setOpen(true)}
+      onMouseLeave={() => context.setOpen(false)}
       {...props}
     >
       {children}
