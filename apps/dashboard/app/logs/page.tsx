@@ -292,8 +292,6 @@ export default function LogsPage() {
                 </TableHeader>
                 <TableBody>
                   {logs.map((log) => {
-                    const hasDetails = log.metadata && Object.keys(log.metadata).length > 0;
-                    
                     return (
                       <TableRow key={log.id} className="hover:bg-muted/50">
                         <TableCell>
@@ -317,8 +315,7 @@ export default function LogsPage() {
                                   {log.message}
                                 </div>
                               </TooltipTrigger>
-                              {hasDetails && (
-                                <TooltipContent 
+                              <TooltipContent 
                                   side="right" 
                                   className="max-w-lg p-4 bg-popover border shadow-lg"
                                 >
@@ -326,39 +323,71 @@ export default function LogsPage() {
                                     <div className="font-semibold mb-2 border-b pb-2">
                                       {log.message}
                                     </div>
-                                    <div className="space-y-2 max-h-96 overflow-y-auto">
-                                      {log.metadata && Object.entries(log.metadata).map(([key, value]) => {
-                                        const stringValue = typeof value === "object" 
-                                          ? JSON.stringify(value, null, 2)
-                                          : String(value);
-                                        const isLongText = stringValue.length > 100;
-                                        const displayValue = isLongText && typeof value !== "object"
-                                          ? stringValue.substring(0, 200) + "..."
-                                          : stringValue;
-                                        
-                                        return (
-                                          <div key={key} className="border-b pb-2 last:border-0">
-                                            <div className="text-muted-foreground font-medium text-xs mb-1">
-                                              {key}:
-                                            </div>
-                                            <div className="text-xs break-words">
-                                              {typeof value === "object" ? (
-                                                <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">
-                                                  {displayValue}
-                                                </pre>
-                                              ) : (
-                                                <div className="whitespace-pre-wrap">
-                                                  {displayValue}
-                                                </div>
-                                              )}
-                                            </div>
-                                          </div>
-                                        );
-                                      })}
+                                    
+                                    {/* Basic info */}
+                                    <div className="grid grid-cols-[100px_1fr] gap-2 text-xs">
+                                      <span className="text-muted-foreground font-medium">Level:</span>
+                                      <span className="font-medium">{log.level}</span>
+                                      
+                                      <span className="text-muted-foreground font-medium">Service:</span>
+                                      <span>{log.service || "N/A"}</span>
+                                      
+                                      <span className="text-muted-foreground font-medium">Timestamp:</span>
+                                      <span>{new Date(log.timestamp).toLocaleString("fr-FR", { 
+                                        year: "numeric",
+                                        month: "long", 
+                                        day: "numeric",
+                                        hour: "2-digit", 
+                                        minute: "2-digit", 
+                                        second: "2-digit" 
+                                      })}</span>
+                                      
+                                      <span className="text-muted-foreground font-medium">ID:</span>
+                                      <span className="font-mono text-xs">{log.id}</span>
                                     </div>
+                                    
+                                    {/* Metadata */}
+                                    {log.metadata && Object.keys(log.metadata).length > 0 && (
+                                      <>
+                                        <div className="border-t pt-2 mt-2">
+                                          <div className="text-xs font-semibold mb-2 text-muted-foreground">
+                                            Metadata:
+                                          </div>
+                                          <div className="space-y-2 max-h-96 overflow-y-auto">
+                                            {Object.entries(log.metadata).map(([key, value]) => {
+                                              const stringValue = typeof value === "object" 
+                                                ? JSON.stringify(value, null, 2)
+                                                : String(value);
+                                              const isLongText = stringValue.length > 200;
+                                              const displayValue = isLongText && typeof value !== "object"
+                                                ? stringValue.substring(0, 300) + "..."
+                                                : stringValue;
+                                              
+                                              return (
+                                                <div key={key} className="border-b pb-2 last:border-0">
+                                                  <div className="text-muted-foreground font-medium text-xs mb-1">
+                                                    {key}:
+                                                  </div>
+                                                  <div className="text-xs break-words">
+                                                    {typeof value === "object" ? (
+                                                      <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">
+                                                        {displayValue}
+                                                      </pre>
+                                                    ) : (
+                                                      <div className="whitespace-pre-wrap">
+                                                        {displayValue}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      </>
+                                    )}
                                   </div>
                                 </TooltipContent>
-                              )}
                             </Tooltip>
                           </TooltipProvider>
                         </TableCell>
