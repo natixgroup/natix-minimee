@@ -44,6 +44,60 @@ export interface Log {
   timestamp: string;
 }
 
+export interface ActionLog {
+  id: number;
+  action_type: string;
+  duration_ms: number | null;
+  model: string | null;
+  input_data: Record<string, any> | null;
+  output_data: Record<string, any> | null;
+  metadata: Record<string, any> | null;
+  message_id: number | null;
+  conversation_id: string | null;
+  request_id: string | null;
+  user_id: number | null;
+  source: string | null;
+  status: string | null;
+  error_message: string | null;
+  timestamp: string;
+}
+
+export interface EmbeddingMessageInfo {
+  id: number;
+  content: string;
+  sender: string;
+  recipient: string | null;
+  recipients: string[] | null;
+  source: string;
+  conversation_id: string | null;
+  timestamp: string;
+}
+
+export interface Embedding {
+  id: number;
+  text: string;
+  source: string | null;
+  metadata: Record<string, any> | null;
+  message_id: number | null;
+  message: EmbeddingMessageInfo | null;
+  created_at: string;
+}
+
+export interface EmbeddingsListResponse {
+  embeddings: Embedding[];
+  total: number;
+  page: number;
+  limit: number;
+  total_pages: number;
+}
+
+export interface UploadStats {
+  messages_created: number;
+  chunks_created: number;
+  summaries_created: number;
+  embeddings_created: number;
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -53,25 +107,42 @@ class ApiClient {
 
   private async request<T>(
     endpoint: string,
-    options?: RequestInit
+    options?: RequestInit & { timeout?: number }
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-      },
-    });
+    const timeout = options?.timeout || 3000; // Default 3s timeout
+    
+    // Create AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+        },
+      });
+      
+      clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({
-        detail: `HTTP error! status: ${response.status}`,
-      }));
-      throw new Error(error.detail || "An error occurred");
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({
+          detail: `HTTP error! status: ${response.status}`,
+        }));
+        throw new Error(error.detail || "An error occurred");
+      }
+
+      return response.json();
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Request timeout after ${timeout}ms`);
+      }
+      throw error;
     }
-
-    return response.json();
   }
 
   // Health
@@ -183,6 +254,74 @@ class ApiClient {
     return this.request<Log[]>(`/logs${query ? `?${query}` : ""}`);
   }
 
+  // Action Logs
+  async getActionLogs(params?: {
+    action_type?: string;
+    request_id?: string;
+    message_id?: number;
+    conversation_id?: string;
+    user_id?: number;
+    source?: string;
+    status?: string;
+    start_date?: string;
+    end_date?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const queryParams = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined) {
+          queryParams.append(key, String(value));
+        }
+      });
+    }
+    const query = queryParams.toString();
+    return this.request<ActionLog[]>(`/action-logs${query ? `?${query}` : ""}`);
+  }
+
+  // Stream Action Logs (SSE)
+  subscribeActionLogs(
+    onMessage: (log: ActionLog) => void,
+    onError?: (error: Error) => void,
+    filters?: {
+      action_type?: string;
+      request_id?: string;
+      message_id?: number;
+    }
+  ) {
+    const queryParams = new URLSearchParams();
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined) {
+          queryParams.append(key, String(value));
+        }
+      });
+    }
+    const query = queryParams.toString();
+    const url = `${this.baseUrl}/logs/stream${query ? `?${query}` : ""}`;
+
+    const eventSource = new EventSource(url);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const log = JSON.parse(event.data) as ActionLog;
+        onMessage(log);
+      } catch (error) {
+        onError?.(error as Error);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      onError?.(new Error("EventSource failed"));
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }
+
   // WhatsApp Upload
   async uploadWhatsApp(file: File, userId: number = 1) {
     const formData = new FormData();
@@ -203,6 +342,86 @@ class ApiClient {
     }
 
     return response.json();
+  }
+
+  // WhatsApp Upload with real-time progress (SSE)
+  uploadWhatsAppWithProgress(
+    file: File,
+    userId: number = 1,
+    onProgress: (update: {
+      type: "progress" | "complete" | "error";
+      step?: string;
+      data?: {
+        step?: string;
+        message?: string;
+        current?: number;
+        total?: number;
+        embeddings_created?: number;
+      };
+      message?: string;
+      conversation_id?: string;
+      stats?: UploadStats;
+      warnings?: string[];
+    }) => void,
+    onError?: (error: Error) => void
+  ) {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("user_id", String(userId));
+
+    const url = `${this.baseUrl}/ingest/whatsapp-upload-stream`;
+    
+    fetch(url, {
+      method: "POST",
+      body: formData,
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error("No response body");
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        const readChunk = (): Promise<void> => {
+          return reader.read().then(({ done, value }) => {
+            if (done) {
+              return;
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  onProgress(data);
+                  
+                  if (data.type === "complete" || data.type === "error") {
+                    return;
+                  }
+                } catch (e) {
+                  // Ignore parse errors for heartbeat lines
+                }
+              }
+            }
+
+            return readChunk();
+          });
+        };
+
+        return readChunk();
+      })
+      .catch((error) => {
+        onError?.(error as Error);
+      });
   }
 
   // Gmail
@@ -281,6 +500,39 @@ class ApiClient {
     return this.restartWhatsAppBridge();
   }
 
+  // OpenAI Configuration
+  async validateOpenAIKey(apiKey: string) {
+    // Validation can take up to 10s (API call to OpenAI + DB save), so use 12s timeout
+    return this.request<{
+      configured: boolean;
+      valid: boolean;
+      message: string;
+      masked_key?: string;
+    }>("/openai/validate", {
+      method: "POST",
+      body: JSON.stringify({ api_key: apiKey }),
+      timeout: 12000, // 12 seconds for OpenAI API validation
+    });
+  }
+
+  async getOpenAIStatus() {
+    // Status check can take up to 5s for validation, use 8s timeout
+    return this.request<{
+      configured: boolean;
+      valid: boolean;
+      message: string;
+      masked_key?: string;
+    }>("/openai/status", {
+      timeout: 8000, // 8 seconds for OpenAI API status check
+    });
+  }
+
+  async deleteOpenAIKey() {
+    return this.request<{ message: string }>("/openai/key", {
+      method: "DELETE",
+    });
+  }
+
   // Model Status
   async getModelStatus() {
     return this.request<{
@@ -291,6 +543,40 @@ class ApiClient {
       size?: string;
       modified?: string;
     }>("/llm/status");
+  }
+
+  async getModels() {
+    return this.request<{
+      models: Array<{
+        provider: string;
+        model: string;
+        parameters?: string;
+        size?: string;
+        context_length?: string;
+        modified?: string;
+        description?: string;
+        available: boolean;
+        error?: string;
+        location_type?: "local" | "cloud";
+        cost?: "free" | "paid";
+        cost_info?: string;
+      }>;
+    }>("/llm/models");
+  }
+
+  async getEmbeddingModels() {
+    return this.request<{
+      models: Array<{
+        model: string;
+        dimensions: number;
+        description: string;
+        size?: string;
+        available: boolean;
+        use_case?: string;
+        location_type?: "local" | "cloud";
+        cost?: "free" | "paid";
+      }>;
+    }>("/embeddings/models");
   }
 
   // Minimee Message & Approval
@@ -331,6 +617,27 @@ class ApiClient {
           email_thread_id: emailThreadId,
         }),
       }
+    );
+  }
+
+  // Embeddings
+  async getEmbeddings(params?: {
+    source?: string;
+    search?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const queryParams = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== "") {
+          queryParams.append(key, String(value));
+        }
+      });
+    }
+    const query = queryParams.toString();
+    return this.request<EmbeddingsListResponse>(
+      `/embeddings${query ? `?${query}` : ""}`
     );
   }
 }
