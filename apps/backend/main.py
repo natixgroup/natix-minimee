@@ -66,30 +66,43 @@ async def log_requests(request: Request, call_next):
     response.headers["X-Process-Time"] = str(round(process_time, 4))
     response.headers["X-Request-ID"] = request_id
     
-    # Log structured request (skip frontend polling requests)
+    # Log structured request (categorize frontend polling vs API calls)
     try:
         endpoint_path = request.url.path
         
-        # Skip logging for frontend polling/interaction endpoints
-        skip_paths = [
-            "/logs",  # Frontend polling logs endpoint
-            "/logs/stream",  # Logs SSE stream
-            "/logs/metadata",  # Logs metadata
-            "/metrics",  # Metrics endpoint (if polled by frontend)
-            "/health",  # Health check
-        ]
-        
-        # Skip if path matches skip list or is a static asset
+        # Skip logging for static assets only
         should_skip = (
-            endpoint_path in skip_paths or
             endpoint_path.startswith("/_next/") or
             endpoint_path.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg", ".woff", ".woff2"))
         )
         
         if not should_skip:
             db = next(get_db())
+            
             # Categorize service based on endpoint
-            service = "api"
+            # Frontend polling/interaction endpoints -> "frontend" (can be filtered out)
+            frontend_polling_paths = [
+                "/logs",
+                "/logs/stream",
+                "/logs/metadata",
+                "/metrics",
+                "/health",
+                "/embeddings",
+                "/llm/status",
+                "/llm/models",
+                "/embeddings/models",
+                "/settings",
+            ]
+            
+            # Check if path starts with any of the frontend polling paths
+            is_frontend_polling = any(
+                endpoint_path == path or 
+                endpoint_path.startswith(f"{path}/") or
+                endpoint_path.startswith(path)
+                for path in frontend_polling_paths
+            )
+            
+            service = "frontend" if is_frontend_polling else "api"
             
             log_structured(
                 db=db,
