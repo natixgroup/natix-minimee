@@ -450,25 +450,27 @@ async function startBridge() {
             }
           }
 
-          const sender = msg.key.remoteJid;
+          const senderJid = msg.key.remoteJid;
+          const senderName = msg.pushName || msg.key.participant?.split('@')[0] || senderJid.split('@')[0];
           const messageId = msg.key.id;
           const timestamp = msg.messageTimestamp 
             ? new Date(msg.messageTimestamp * 1000) 
             : new Date();
 
           logMessage('incoming', messageText, {
-            from: sender,
+            from: senderJid,
+            senderName,
             messageId,
             timestamp: timestamp.toISOString(),
           });
 
           // Forward to backend
           try {
-            const conversationId = sender.split('@')[0];
+            const conversationId = senderJid.split('@')[0];
             
             const response = await sendMessageToBackend({
               content: messageText,
-              sender: sender,
+              sender: senderName, // Use readable name instead of full JID
               timestamp: timestamp.toISOString(),
               conversation_id: conversationId,
             });
@@ -476,12 +478,20 @@ async function startBridge() {
             logger.info({
               messageId: response.message_id,
               optionsCount: response.options?.length || 0,
-            }, 'Message processed by backend');
+              conversationId,
+              sender: senderName,
+            }, 'Message processed by backend - approval options should be sent to group');
+            
+            // Note: The backend will automatically send approval request to Minimee TEAM group
+            // via the bridge_client service after generating options
             
           } catch (error) {
             logger.error({ 
               error: error.message,
-              from: sender,
+              errorStack: error.stack,
+              from: senderJid,
+              senderName,
+              conversationId,
             }, 'Error forwarding message to backend');
           }
         }
