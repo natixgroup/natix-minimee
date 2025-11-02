@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,6 +29,7 @@ interface ProgressData {
 }
 
 export function WhatsAppUpload() {
+  const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -123,6 +125,12 @@ export function WhatsAppUpload() {
           setUploadSuccess(true);
           setIsUploading(false);
           setFile(null);
+          
+          // Invalidate WhatsApp import history to refresh the list
+          queryClient.invalidateQueries({ 
+            queryKey: ["whatsapp-import-history"],
+            exact: false // Invalidate all queries starting with this key
+          });
           
           // Show success toast
           const stats = result.stats;
