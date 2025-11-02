@@ -237,7 +237,11 @@ export function EmbeddingsTable() {
             </Button>
           </CardTitle>
         </CardHeader>
-        {filtersExpanded && (
+        <div
+          className={`overflow-hidden transition-all duration-300 ease-in-out ${
+            filtersExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
+          }`}
+        >
           <CardContent className="space-y-4">
             {/* Message Date Filter */}
             <div>
@@ -336,7 +340,7 @@ export function EmbeddingsTable() {
               </div>
             </div>
           </CardContent>
-        )}
+        </div>
       </Card>
 
       {/* Embeddings Table */}

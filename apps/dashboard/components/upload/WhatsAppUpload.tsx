@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,6 +28,7 @@ interface ProgressData {
 }
 
 export function WhatsAppUpload() {
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(false);
@@ -162,16 +163,31 @@ export function WhatsAppUpload() {
     return baseLabel + (step !== "complete" && step !== "error" ? "..." : "");
   };
 
+  const handleChooseFile = () => {
+    fileInputRef.current?.click();
+  };
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <Input
+          ref={fileInputRef}
           type="file"
           accept=".txt"
           onChange={handleFileChange}
-          className="cursor-pointer"
+          className="hidden"
           disabled={isUploading}
         />
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleChooseFile}
+          disabled={isUploading}
+          className="w-full"
+        >
+          <FileText className="mr-2 h-4 w-4" />
+          {file ? file.name : "Choose File"}
+        </Button>
         <p className="text-sm text-muted-foreground">
           Select a WhatsApp conversation export (.txt file). Maximum size: 50MB.
         </p>
