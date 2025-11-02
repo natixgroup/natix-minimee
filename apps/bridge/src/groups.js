@@ -159,12 +159,36 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
     
     // Try to send with interactive buttons (Baileys supports buttons)
     try {
-      // Baileys button format: array of buttons with id and displayText
+      // Truncate button text to fit WhatsApp limit (20 chars max per button, but we'll use first 25 and add ...)
+      const truncateButtonText = (text, prefix = '', maxLen = 25) => {
+        const fullText = prefix ? `${prefix} ${text}` : text;
+        if (fullText.length <= maxLen) return fullText;
+        return fullText.substring(0, maxLen - 3) + '...';
+      };
+      
+      // Use actual option texts from options object (options.A, options.B, options.C)
+      // WhatsApp buttons have a character limit, so truncate if needed
       const buttons = [
-        { buttonId: `approve_${approval_id}_A`, buttonText: { displayText: 'A) Option A' }, type: 1 },
-        { buttonId: `approve_${approval_id}_B`, buttonText: { displayText: 'B) Option B' }, type: 1 },
-        { buttonId: `approve_${approval_id}_C`, buttonText: { displayText: 'C) Option C' }, type: 1 },
-        { buttonId: `approve_${approval_id}_NO`, buttonText: { displayText: 'No) Ne pas répondre' }, type: 1 },
+        { 
+          buttonId: `approve_${approval_id}_A`, 
+          buttonText: { displayText: truncateButtonText(options.A || 'Option A', 'A)') }, 
+          type: 1 
+        },
+        { 
+          buttonId: `approve_${approval_id}_B`, 
+          buttonText: { displayText: truncateButtonText(options.B || 'Option B', 'B)') }, 
+          type: 1 
+        },
+        { 
+          buttonId: `approve_${approval_id}_C`, 
+          buttonText: { displayText: truncateButtonText(options.C || 'Option C', 'C)') }, 
+          type: 1 
+        },
+        { 
+          buttonId: `approve_${approval_id}_NO`, 
+          buttonText: { displayText: 'No) Ne pas répondre' }, 
+          type: 1 
+        },
       ];
       
       const buttonMessage = {
@@ -181,12 +205,16 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
         approval_id,
         group_message_id,
         method: 'buttons',
+        buttonTexts: buttons.map(b => b.buttonText.displayText),
       }, 'Approval request sent with buttons');
       
       return { group_message_id, method: 'buttons' };
     } catch (buttonError) {
       // Fallback to plain text message
-      logger.warn({ error: buttonError.message }, 'Button message failed, falling back to text');
+      logger.warn({ 
+        error: buttonError.message,
+        stack: buttonError.stack 
+      }, 'Button message failed, falling back to text');
       
       const sent = await sock.sendMessage(groupId, { text: message_text });
       const group_message_id = sent.key.id;
