@@ -1,15 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { useLogs } from "@/lib/hooks/useLogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle } from "lucide-react";
+import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle, Filter, X, ChevronDown, ChevronUp } from "lucide-react";
 import { Log } from "@/lib/api";
-
 import { 
   Tooltip, 
   TooltipContent, 
@@ -17,15 +16,87 @@ import {
   TooltipTrigger 
 } from "@/components/ui/tooltip";
 
+const TIME_FILTERS = [
+  { label: "Last Hour", value: "last_hour" },
+  { label: "Today", value: "today" },
+  { label: "Yesterday", value: "yesterday" },
+  { label: "Last 7 Days", value: "last_7_days" },
+  { label: "Last 30 Days", value: "last_30_days" },
+  { label: "All Time", value: "all" },
+] as const;
+
+type TimeFilter = typeof TIME_FILTERS[number]["value"];
+
+const LOG_LEVELS = [
+  { label: "All", value: "all" },
+  { label: "ERROR", value: "ERROR" },
+  { label: "WARNING", value: "WARNING" },
+  { label: "INFO", value: "INFO" },
+  { label: "DEBUG", value: "DEBUG" },
+] as const;
+
+const SERVICES = [
+  { label: "All Services", value: "all" },
+  { label: "API", value: "api" },
+  { label: "Frontend", value: "frontend" },
+  { label: "Minimee", value: "minimee" },
+  { label: "Approval Flow", value: "approval_flow" },
+  { label: "Ingestion", value: "ingestion" },
+  { label: "Bridge Client", value: "bridge_client" },
+] as const;
+
 export default function LogsPage() {
-  const [level, setLevel] = useState<string>("all");
-  const [service, setService] = useState<string>("all");
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
+  const [selectedLevel, setSelectedLevel] = useState<string>("all");
+  const [selectedService, setSelectedService] = useState<string>("all");
   const [page, setPage] = useState(0);
+  const [filtersExpanded, setFiltersExpanded] = useState(true);
   const limit = 50;
 
+  // Calculate date range from time filter
+  const dateRange = useMemo(() => {
+    const now = new Date();
+    let start_date: Date | null = null;
+    let end_date: Date | null = null;
+
+    switch (timeFilter) {
+      case "last_hour":
+        start_date = new Date(now.getTime() - 60 * 60 * 1000);
+        break;
+      case "today":
+        const todayStart = new Date(now);
+        todayStart.setHours(0, 0, 0, 0);
+        start_date = todayStart;
+        break;
+      case "yesterday":
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        start_date = new Date(yesterday.setHours(0, 0, 0, 0));
+        end_date = new Date(yesterday.setHours(23, 59, 59, 999));
+        break;
+      case "last_7_days":
+        start_date = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case "last_30_days":
+        start_date = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case "all":
+        start_date = null;
+        end_date = null;
+        break;
+    }
+
+    return {
+      start_date: start_date ? start_date.toISOString() : undefined,
+      end_date: end_date ? end_date.toISOString() : undefined,
+    };
+  }, [timeFilter]);
+
   const { data, isLoading, isError } = useLogs({
-    level: level !== "all" ? level : undefined,
-    service: service !== "all" ? service : undefined,
+    level: selectedLevel !== "all" ? selectedLevel : undefined,
+    service: selectedService !== "all" ? selectedService : undefined,
+    start_date: dateRange.start_date,
+    end_date: dateRange.end_date,
     limit,
     offset: page * limit,
   });
@@ -49,6 +120,15 @@ export default function LogsPage() {
     }
   };
 
+  const hasActiveFilters = timeFilter !== "all" || selectedLevel !== "all" || selectedService !== "all";
+
+  const clearFilters = () => {
+    setTimeFilter("all");
+    setSelectedLevel("all");
+    setSelectedService("all");
+    setPage(0);
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -59,39 +139,129 @@ export default function LogsPage() {
           </p>
         </div>
 
-        {/* Filters */}
-        <div className="flex gap-4 items-center">
-          <Select value={level} onValueChange={setLevel}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="All Levels" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Levels</SelectItem>
-              <SelectItem value="ERROR">ERROR</SelectItem>
-              <SelectItem value="WARNING">WARNING</SelectItem>
-              <SelectItem value="INFO">INFO</SelectItem>
-              <SelectItem value="DEBUG">DEBUG</SelectItem>
-            </SelectContent>
-          </Select>
+        {/* Filters Card */}
+        <Card>
+          <CardContent className="pt-6">
+            <div className="space-y-4">
+              {/* Filter Header */}
+              <div 
+                className="flex items-center justify-between cursor-pointer"
+                onClick={() => setFiltersExpanded(!filtersExpanded)}
+              >
+                <div className="flex items-center gap-2">
+                  <Filter className="h-4 w-4" />
+                  <span className="font-medium">Filters</span>
+                  {hasActiveFilters && (
+                    <Badge variant="secondary" className="ml-2">
+                      Active
+                    </Badge>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFiltersExpanded(!filtersExpanded);
+                  }}
+                >
+                  {filtersExpanded ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
 
-          <Select value={service} onValueChange={setService}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="All Services" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Services</SelectItem>
-              <SelectItem value="api">API</SelectItem>
-              <SelectItem value="frontend">Frontend</SelectItem>
-              <SelectItem value="minimee">Minimee</SelectItem>
-              <SelectItem value="approval_flow">Approval Flow</SelectItem>
-              <SelectItem value="ingestion">Ingestion</SelectItem>
-              <SelectItem value="bridge_client">Bridge Client</SelectItem>
-            </SelectContent>
-          </Select>
+              {/* Filters Content */}
+              <div
+                className={`overflow-hidden transition-all duration-300 ${
+                  filtersExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="space-y-4 pt-2">
+                  {/* Time Filter */}
+                  <div>
+                    <label className="text-sm font-medium mb-2 block">Time Range</label>
+                    <div className="flex flex-wrap gap-2">
+                      {TIME_FILTERS.map((filter) => (
+                        <Button
+                          key={filter.value}
+                          variant={timeFilter === filter.value ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => {
+                            setTimeFilter(filter.value);
+                            setPage(0);
+                          }}
+                        >
+                          {filter.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
 
-          <div className="ml-auto text-sm text-muted-foreground">
-            {total} total logs
-          </div>
+                  {/* Level Filter */}
+                  <div>
+                    <label className="text-sm font-medium mb-2 block">Level</label>
+                    <div className="flex flex-wrap gap-2">
+                      {LOG_LEVELS.map((level) => (
+                        <Button
+                          key={level.value}
+                          variant={selectedLevel === level.value ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => {
+                            setSelectedLevel(level.value);
+                            setPage(0);
+                          }}
+                        >
+                          {level.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Service Filter */}
+                  <div>
+                    <label className="text-sm font-medium mb-2 block">
+                      Service
+                      {hasActiveFilters && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="ml-2 h-6 px-2"
+                          onClick={clearFilters}
+                        >
+                          <X className="h-3 w-3 mr-1" />
+                          Clear All
+                        </Button>
+                      )}
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {SERVICES.map((service) => (
+                        <Button
+                          key={service.value}
+                          variant={selectedService === service.value ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => {
+                            setSelectedService(service.value);
+                            setPage(0);
+                          }}
+                        >
+                          {service.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Total count */}
+        <div className="text-sm text-muted-foreground">
+          {total} total logs
         </div>
 
         {/* Logs Table */}
@@ -156,23 +326,35 @@ export default function LogsPage() {
                                     <div className="font-semibold mb-2 border-b pb-2">
                                       {log.message}
                                     </div>
-                                    <div className="space-y-1 max-h-96 overflow-y-auto">
-                                      {log.metadata && Object.entries(log.metadata).map(([key, value]) => (
-                                        <div key={key} className="grid grid-cols-[120px_1fr] gap-2">
-                                          <span className="text-muted-foreground font-medium text-xs">
-                                            {key}:
-                                          </span>
-                                          <span className="text-xs break-words">
-                                            {typeof value === "object" ? (
-                                              <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded">
-                                                {JSON.stringify(value, null, 2)}
-                                              </pre>
-                                            ) : (
-                                              String(value)
-                                            )}
-                                          </span>
-                                        </div>
-                                      ))}
+                                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                                      {log.metadata && Object.entries(log.metadata).map(([key, value]) => {
+                                        const stringValue = typeof value === "object" 
+                                          ? JSON.stringify(value, null, 2)
+                                          : String(value);
+                                        const isLongText = stringValue.length > 100;
+                                        const displayValue = isLongText && typeof value !== "object"
+                                          ? stringValue.substring(0, 200) + "..."
+                                          : stringValue;
+                                        
+                                        return (
+                                          <div key={key} className="border-b pb-2 last:border-0">
+                                            <div className="text-muted-foreground font-medium text-xs mb-1">
+                                              {key}:
+                                            </div>
+                                            <div className="text-xs break-words">
+                                              {typeof value === "object" ? (
+                                                <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">
+                                                  {displayValue}
+                                                </pre>
+                                              ) : (
+                                                <div className="whitespace-pre-wrap">
+                                                  {displayValue}
+                                                </div>
+                                              )}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 </TooltipContent>
