@@ -24,8 +24,8 @@ export default function LogsPage() {
   const limit = 50;
 
   const { data, isLoading, isError } = useLogs({
-    level: level level: level || undefined,level: level || undefined, level !== "all" ? level : undefined,
-    service: service service: service || undefined,service: service || undefined, service !== "all" ? service : undefined,
+    level: level !== "all" ? level : undefined,
+    service: service !== "all" ? service : undefined,
     limit,
     offset: page * limit,
   });
