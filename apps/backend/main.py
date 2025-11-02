@@ -69,13 +69,28 @@ async def log_requests(request: Request, call_next):
     # Log structured request
     try:
         db = next(get_db())
+        # Categorize service based on endpoint
+        # API endpoints (backend routes)
+        service = "api"
+        endpoint_path = request.url.path
+        
+        # Frontend static assets and Next.js routes
+        if endpoint_path.startswith("/_next/") or endpoint_path.endswith((".js", ".css", ".ico", ".png", ".jpg", ".svg", ".woff", ".woff2")):
+            service = "frontend"
+        # Health and status endpoints
+        elif endpoint_path in ["/health", "/"]:
+            service = "api"
+        # All other endpoints are API calls
+        else:
+            service = "api"
+        
         log_structured(
             db=db,
             level="INFO" if response.status_code < 400 else "ERROR",
             message=f"{request.method} {request.url.path} - {response.status_code}",
-            service="api",
+            service=service,
             request_id=request_id,
-            endpoint=request.url.path,
+            endpoint=endpoint_path,
             method=request.method,
             status_code=response.status_code,
             latency_ms=round(process_time * 1000, 2),

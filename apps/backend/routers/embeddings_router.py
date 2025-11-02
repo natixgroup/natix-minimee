@@ -75,7 +75,7 @@ async def get_embedding_models():
 
 @router.get("", response_model=EmbeddingsListResponse)
 async def get_embeddings(
-    source: Optional[str] = Query(None, description="Filter by source: whatsapp, gmail, or empty for all"),
+    source: Optional[str] = Query(None, description="Filter by source: whatsapp, gmail, dashboard, or empty for all"),
     search: Optional[str] = Query(None, description="Search text in embedding content"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=500, description="Items per page"),
@@ -84,7 +84,7 @@ async def get_embeddings(
     """
     List embeddings with pagination, filtering, and search
     
-    - **source**: Filter by source (whatsapp/gmail). If not in metadata, tries to get from associated message
+    - **source**: Filter by source (whatsapp/gmail/dashboard). If not in metadata, tries to get from associated message
     - **search**: Search text in the embedding content (case-insensitive)
     - **page**: Page number (starts at 1)
     - **limit**: Items per page (max 500)

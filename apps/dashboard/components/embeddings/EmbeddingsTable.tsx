@@ -87,6 +87,7 @@ export function EmbeddingsTable() {
                 <SelectItem value="all">All sources</SelectItem>
                 <SelectItem value="whatsapp">WhatsApp</SelectItem>
                 <SelectItem value="gmail">Gmail</SelectItem>
+                <SelectItem value="dashboard">Dashboard</SelectItem>
               </SelectContent>
             </Select>
 

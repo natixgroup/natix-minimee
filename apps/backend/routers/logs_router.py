@@ -15,6 +15,26 @@ from models import ActionLog
 
 router = APIRouter()
 
+# Standard log levels as defined in the system
+STANDARD_LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
+@router.get("/logs/metadata")
+async def get_logs_metadata(db: Session = Depends(get_db)):
+    """
+    Get available log levels and services for filtering
+    Returns standard levels (always) and actual services from database
+    """
+    # Get unique services from database
+    from models import Log
+    services = db.query(Log.service).distinct().filter(Log.service.isnot(None)).order_by(Log.service).all()
+    unique_services = [s[0] for s in services]
+    
+    return {
+        "levels": STANDARD_LOG_LEVELS,
+        "services": unique_services
+    }
+
 
 @router.get("/logs")
 async def get_logs_endpoint(

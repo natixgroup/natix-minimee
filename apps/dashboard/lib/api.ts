@@ -233,6 +233,14 @@ class ApiClient {
     });
   }
 
+  // Logs metadata (available filters)
+  async getLogsMetadata() {
+    return this.request<{
+      levels: string[];
+      services: string[];
+    }>("/logs/metadata");
+  }
+
   // Logs
   async getLogs(params?: {
     level?: string;
