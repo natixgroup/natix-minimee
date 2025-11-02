@@ -36,6 +36,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 let connectionStatus = 'disconnected'; // 'disconnected', 'connecting', 'connected'
 let currentQR = null;
 let qrImageData = null;
+let currentUserJid = null; // Store connected user's JID
 
 /**
  * Extract text from Baileys message
@@ -176,6 +177,22 @@ async function startBridge() {
         connectionStatus = 'connected';
         currentQR = null;
         qrImageData = null;
+        
+        // Store user JID when connected
+        // Try to get from socket first, then from saved credentials
+        if (sock.user?.id) {
+          currentUserJid = sock.user.id;
+        } else {
+          // Try to get from saved auth state
+          try {
+            const { state: authState } = await useMultiFileAuthState('auth_info');
+            if (authState.creds?.me?.id) {
+              currentUserJid = authState.creds.me.id;
+            }
+          } catch (error) {
+            logger.warn({ error: error.message }, 'Could not load user JID from auth state');
+          }
+        }
         
         reconnectAttempts = 0;
         logConnection('open', {});
@@ -697,6 +714,114 @@ app.post('/bridge/send-message', async (req, res) => {
     });
   } catch (error) {
     logger.error({ error: error.message, recipient: req.body.recipient }, 'Error sending message');
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+});
+
+// GET /user-info - Get connected WhatsApp user info
+app.get('/user-info', (req, res) => {
+  try {
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({
+        status: 'error',
+        message: 'WhatsApp not connected',
+      });
+    }
+
+    // Get user phone number from stored JID or current socket
+    let userJid = currentUserJid;
+    
+    // Fallback: try to get from socket if not stored
+    if (!userJid && sock) {
+      if (sock.user?.id) {
+        userJid = sock.user.id;
+      } else if (sock.user?.jid) {
+        userJid = sock.user.jid;
+      }
+    }
+    
+    if (!userJid) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User info not available - user not connected or credentials not loaded',
+      });
+    }
+
+    // Extract phone number from JID (format: 33612345678@s.whatsapp.net or just the number)
+    const phone = typeof userJid === 'string' && userJid.includes('@') 
+      ? userJid.split('@')[0] 
+      : String(userJid).replace(/@.*$/, '');
+
+    res.json({
+      status: 'success',
+      phone: phone,
+      user_id: userJid,
+    });
+  } catch (error) {
+    logger.error({ error: error.message }, 'Error getting user info');
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+});
+
+// POST /bridge/test-message - Send test message with different formats
+app.post('/bridge/test-message', async (req, res) => {
+  try {
+    const { method, recipient } = req.body;
+
+    if (!method) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'method is required (buttons, interactive, template, poll)',
+      });
+    }
+
+    if (!recipient) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'recipient phone number is required',
+      });
+    }
+
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({
+        status: 'error',
+        message: 'WhatsApp not connected',
+      });
+    }
+
+    // Import test message functions
+    const { sendTestMessage } = await import('./test-messages.js');
+
+    // Send test message with timeout (10 seconds)
+    const sendPromise = sendTestMessage(sock, method, recipient);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Test message timeout after 10s')), 10000)
+    );
+
+    const result = await Promise.race([sendPromise, timeoutPromise]);
+
+    logger.info({
+      method,
+      recipient,
+      messageId: result.group_message_id,
+      format: result.format,
+    }, 'Test message sent successfully');
+
+    res.json({
+      status: 'success',
+      message: 'Test message sent',
+      formatUsed: result.format,
+      method: result.method,
+      messageId: result.group_message_id,
+    });
+  } catch (error) {
+    logger.error({ error: error.message, method: req.body.method }, 'Error sending test message');
     res.status(500).json({
       status: 'error',
       message: error.message,

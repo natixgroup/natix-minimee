@@ -578,6 +578,41 @@ class ApiClient {
     return this.restartWhatsAppBridge();
   }
 
+  // Get connected WhatsApp user phone number
+  async getConnectedWhatsAppUser() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/user-info`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return data.phone || data.user_id || null;
+  }
+
+  // Test WhatsApp message with different formats
+  async testWhatsAppMessage(method: string, recipientPhone: string) {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/bridge/test-message`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        method,
+        recipient: recipientPhone,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({
+        message: `HTTP error! status: ${response.status}`,
+      }));
+      throw new Error(error.message || "Test failed");
+    }
+
+    return response.json();
+  }
+
   // OpenAI Configuration
   async validateOpenAIKey(apiKey: string) {
     // Validation can take up to 10s (API call to OpenAI + DB save), so use 12s timeout
@@ -808,6 +843,31 @@ class ApiClient {
     const query = queryParams.toString();
     return this.request<EmbeddingsListResponse>(
       `/embeddings${query ? `?${query}` : ""}`
+    );
+  }
+
+  async deleteEmbeddings(params?: {
+    source?: string;
+    search?: string;
+    message_start_date?: string;
+    message_end_date?: string;
+    embedding_start_date?: string;
+    embedding_end_date?: string;
+  }) {
+    const queryParams = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== "") {
+          queryParams.append(key, String(value));
+        }
+      });
+    }
+    const query = queryParams.toString();
+    return this.request<{ deleted: number; message: string }>(
+      `/embeddings${query ? `?${query}` : ""}`,
+      {
+        method: "DELETE",
+      }
     );
   }
 }
