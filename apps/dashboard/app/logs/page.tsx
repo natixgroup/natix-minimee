@@ -9,6 +9,94 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle, Filter, X, ChevronDown, ChevronUp } from "lucide-react";
 import { Log } from "@/lib/api";
+
+// Simple Tooltip component for logs
+function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+  
+  return (
+    <div
+      className="relative inline-block w-full"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div className="absolute z-[9999] left-full top-1/2 -translate-y-1/2 ml-2 w-[500px] max-w-[80vw] p-4 bg-popover text-popover-foreground text-sm rounded-md border shadow-lg">
+          <div className="space-y-2 text-sm">
+            <div className="font-semibold mb-2 border-b pb-2">
+              {log.message}
+            </div>
+            
+            {/* Basic info */}
+            <div className="grid grid-cols-[100px_1fr] gap-2 text-xs">
+              <span className="text-muted-foreground font-medium">Level:</span>
+              <span className="font-medium">{log.level}</span>
+              
+              <span className="text-muted-foreground font-medium">Service:</span>
+              <span>{log.service || "N/A"}</span>
+              
+              <span className="text-muted-foreground font-medium">Timestamp:</span>
+              <span>{new Date(log.timestamp).toLocaleString("fr-FR", { 
+                year: "numeric",
+                month: "long", 
+                day: "numeric",
+                hour: "2-digit", 
+                minute: "2-digit", 
+                second: "2-digit" 
+              })}</span>
+              
+              <span className="text-muted-foreground font-medium">ID:</span>
+              <span className="font-mono text-xs">{log.id}</span>
+            </div>
+            
+            {/* Metadata */}
+            {log.metadata && Object.keys(log.metadata).length > 0 && (
+              <>
+                <div className="border-t pt-2 mt-2">
+                  <div className="text-xs font-semibold mb-2 text-muted-foreground">
+                    Metadata:
+                  </div>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {Object.entries(log.metadata).map(([key, value]) => {
+                      const stringValue = typeof value === "object" 
+                        ? JSON.stringify(value, null, 2)
+                        : String(value);
+                      const isLongText = stringValue.length > 200;
+                      const displayValue = isLongText && typeof value !== "object"
+                        ? stringValue.substring(0, 300) + "..."
+                        : stringValue;
+                      
+                      return (
+                        <div key={key} className="border-b pb-2 last:border-0">
+                          <div className="text-muted-foreground font-medium text-xs mb-1">
+                            {key}:
+                          </div>
+                          <div className="text-xs break-words">
+                            {typeof value === "object" ? (
+                              <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">
+                                {displayValue}
+                              </pre>
+                            ) : (
+                              <div className="whitespace-pre-wrap">
+                                {displayValue}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 import { 
   Tooltip, 
   TooltipContent, 
@@ -307,89 +395,12 @@ export default function LogsPage() {
                             </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="max-w-2xl relative">
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <div className="cursor-help truncate">
-                                  {log.message}
-                                </div>
-                              </TooltipTrigger>
-                              <TooltipContent 
-                                  side="right" 
-                                  className="max-w-lg p-4 bg-popover border shadow-lg"
-                                >
-                                  <div className="space-y-2 text-sm">
-                                    <div className="font-semibold mb-2 border-b pb-2">
-                                      {log.message}
-                                    </div>
-                                    
-                                    {/* Basic info */}
-                                    <div className="grid grid-cols-[100px_1fr] gap-2 text-xs">
-                                      <span className="text-muted-foreground font-medium">Level:</span>
-                                      <span className="font-medium">{log.level}</span>
-                                      
-                                      <span className="text-muted-foreground font-medium">Service:</span>
-                                      <span>{log.service || "N/A"}</span>
-                                      
-                                      <span className="text-muted-foreground font-medium">Timestamp:</span>
-                                      <span>{new Date(log.timestamp).toLocaleString("fr-FR", { 
-                                        year: "numeric",
-                                        month: "long", 
-                                        day: "numeric",
-                                        hour: "2-digit", 
-                                        minute: "2-digit", 
-                                        second: "2-digit" 
-                                      })}</span>
-                                      
-                                      <span className="text-muted-foreground font-medium">ID:</span>
-                                      <span className="font-mono text-xs">{log.id}</span>
-                                    </div>
-                                    
-                                    {/* Metadata */}
-                                    {log.metadata && Object.keys(log.metadata).length > 0 && (
-                                      <>
-                                        <div className="border-t pt-2 mt-2">
-                                          <div className="text-xs font-semibold mb-2 text-muted-foreground">
-                                            Metadata:
-                                          </div>
-                                          <div className="space-y-2 max-h-96 overflow-y-auto">
-                                            {Object.entries(log.metadata).map(([key, value]) => {
-                                              const stringValue = typeof value === "object" 
-                                                ? JSON.stringify(value, null, 2)
-                                                : String(value);
-                                              const isLongText = stringValue.length > 200;
-                                              const displayValue = isLongText && typeof value !== "object"
-                                                ? stringValue.substring(0, 300) + "..."
-                                                : stringValue;
-                                              
-                                              return (
-                                                <div key={key} className="border-b pb-2 last:border-0">
-                                                  <div className="text-muted-foreground font-medium text-xs mb-1">
-                                                    {key}:
-                                                  </div>
-                                                  <div className="text-xs break-words">
-                                                    {typeof value === "object" ? (
-                                                      <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">
-                                                        {displayValue}
-                                                      </pre>
-                                                    ) : (
-                                                      <div className="whitespace-pre-wrap">
-                                                        {displayValue}
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              );
-                                            })}
-                                          </div>
-                                        </div>
-                                      </>
-                                    )}
-                                  </div>
-                                </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                        <TableCell className="max-w-2xl">
+                          <LogTooltip log={log}>
+                            <div className="cursor-help truncate">
+                              {log.message}
+                            </div>
+                          </LogTooltip>
                         </TableCell>
                       </TableRow>
                     );
