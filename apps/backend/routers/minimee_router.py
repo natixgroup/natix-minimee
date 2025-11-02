@@ -327,7 +327,7 @@ async def propose_email_draft(
     from datetime import datetime, timedelta
     from models import GmailThread, Message
     from services.email_draft import generate_email_drafts_sync
-    from services.logs_service import log_to_db
+    # log_to_db is already imported at the top of the file
     from services.action_logger import generate_request_id
     
     request_id = generate_request_id()

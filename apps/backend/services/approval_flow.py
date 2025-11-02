@@ -33,7 +33,7 @@ async def generate_response_options(
     try:
         context = retrieve_context(db, message.content, message.user_id, request_id=request_id)
     except Exception as e:
-        from services.logs_service import log_to_db
+        # log_to_db is already imported at the top of the file
         log_to_db(db, "WARNING", f"RAG context error: {str(e)}, using empty context", service="approval_flow")
         context = ""
     
