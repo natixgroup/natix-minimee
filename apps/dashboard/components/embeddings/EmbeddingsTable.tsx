@@ -218,11 +218,11 @@ export function EmbeddingsTable() {
   return (
     <>
       {/* Filters Card */}
-      <Card>
-        <CardHeader 
-          className="cursor-pointer hover:bg-muted/50 transition-colors"
-          onClick={() => setFiltersExpanded(!filtersExpanded)}
-        >
+      <Card 
+        className="cursor-pointer hover:bg-muted/5 transition-colors"
+        onClick={() => setFiltersExpanded(!filtersExpanded)}
+      >
+        <CardHeader className="pointer-events-none">
           <CardTitle className="flex items-center gap-2">
             <Filter className="h-5 w-5" />
             Filters
@@ -239,6 +239,7 @@ export function EmbeddingsTable() {
           className={`overflow-hidden transition-all duration-300 ease-in-out ${
             filtersExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
           }`}
+          onClick={(e) => e.stopPropagation()}
         >
           <CardContent className="space-y-4">
             {/* Message Date Filter */}

@@ -11,6 +11,7 @@ import { Send, Loader2, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 import { useChatStream } from "@/lib/hooks/useChatStream";
 import { useConversationHistory, type ChatMessage } from "@/lib/hooks/useConversationHistory";
+import { useWhatsAppMessages } from "@/lib/hooks/useWhatsAppMessages";
 import { ApprovalDialog, type MessageOptions } from "./ApprovalDialog";
 
 interface ChatInterfaceProps {
@@ -43,6 +44,23 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
       setMessages(historyData);
     }
   }, [historyData]);
+
+  // Handle WhatsApp messages received via WebSocket
+  const handleWhatsAppMessage = useCallback((message: ChatMessage) => {
+    setMessages((prev) => {
+      // Avoid duplicates
+      if (prev.some((m) => m.id === message.id)) {
+        return prev;
+      }
+      return [...prev, message];
+    });
+  }, []);
+
+  // Connect to WebSocket for WhatsApp messages
+  useWhatsAppMessages({
+    enabled: true, // Always enabled, filtered by toggle in display
+    onMessage: handleWhatsAppMessage,
+  });
 
   // Focus input on mount
   useEffect(() => {

@@ -107,7 +107,13 @@ def ingest_whatsapp_file(
         parsed_messages = parse_whatsapp_export(file_content, user_whatsapp_id=user_whatsapp_id)
         log_to_db(db, "INFO", f"Parsed {len(parsed_messages)} messages", service="ingestion")
         
-        _emit_progress("parsing", {"step": "parsing", "message": f"Parsed {len(parsed_messages)} messages", "current": len(parsed_messages), "total": len(parsed_messages)})
+        # Emit parsing complete immediately
+        _emit_progress("parsing", {
+            "step": "parsing", 
+            "message": f"Parsed {len(parsed_messages)} messages. Starting to save...", 
+            "current": len(parsed_messages), 
+            "total": len(parsed_messages)
+        })
         
         if not parsed_messages:
             return stats

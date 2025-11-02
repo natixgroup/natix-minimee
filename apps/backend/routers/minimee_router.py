@@ -2,7 +2,7 @@
 Core Minimee messaging endpoints
 """
 import json
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -17,6 +17,7 @@ from services.action_logger import log_action, generate_request_id
 from services.rag import retrieve_context, build_prompt_with_context
 from services.agent_manager import select_agent_for_context
 from services.llm_router import generate_llm_response_stream
+from services.websocket_manager import websocket_manager
 from config import settings
 
 router = APIRouter()
@@ -109,6 +110,17 @@ async def process_message(
         )
         
         log_to_db(db, "INFO", f"Processed message {message.id}, generated {len(options.options)} options", service="minimee")
+        
+        # Broadcast WhatsApp message via WebSocket if source is whatsapp
+        if message_data.source == "whatsapp":
+            await websocket_manager.broadcast_whatsapp_message({
+                "id": message.id,
+                "content": message.content,
+                "sender": message.sender,
+                "timestamp": message.timestamp.isoformat(),
+                "source": message.source,
+                "conversation_id": message.conversation_id,
+            })
         
         return options
     
@@ -543,4 +555,26 @@ async def get_conversation_messages(
     except Exception as e:
         log_to_db(db, "ERROR", f"Error fetching conversation messages: {str(e)}", service="minimee")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.websocket("/minimee/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time WhatsApp message updates
+    Clients connect to receive WhatsApp messages as they arrive
+    """
+    await websocket_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive and wait for client messages if needed
+            data = await websocket.receive_text()
+            # Client can send ping/pong for keepalive
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(websocket)
+    except Exception as e:
+        # Log error (without DB since we might not have a session)
+        print(f"WebSocket error: {str(e)}")
+        websocket_manager.disconnect(websocket)
 

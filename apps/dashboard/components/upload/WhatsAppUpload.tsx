@@ -94,17 +94,16 @@ export function WhatsAppUpload() {
             total: 100,
           });
           
-          // Once upload is complete, prepare for next step
+          // Once upload is complete, prepare for next step (but don't force it - wait for real SSE events)
           if (uploadPercent >= 100) {
-            // Wait a moment then transition to parsing
-            setTimeout(() => {
-              setUploadStep("parsing");
-              setProgressData({
-                step: "parsing",
-                message: "File uploaded. Starting processing...",
-                percent: 0,
-              });
-            }, 500);
+            // Set a minimal state while waiting for first progress event
+            // Don't use setTimeout - let real SSE events drive the state
+            setUploadStep("parsing");
+            setProgressData({
+              step: "parsing",
+              message: "File uploaded. Starting processing...",
+              percent: 0,
+            });
           }
         } else if (update.type === "progress") {
           // Update step based on progress data
