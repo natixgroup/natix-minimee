@@ -43,7 +43,7 @@ async def send_approval_request_to_bridge(
             }
         )
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 endpoint,
                 json=approval_data,

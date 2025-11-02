@@ -615,8 +615,9 @@ app.post('/bridge/send-approval-request', async (req, res) => {
     // Import group function
     const { sendApprovalMessageToGroup } = await import('./groups.js');
     
-    // Send to group
-    const result = await sendApprovalMessageToGroup(sock, {
+    // Send to group with timeout protection
+    // Use Promise.race to ensure we don't wait forever
+    const sendPromise = sendApprovalMessageToGroup(sock, {
       message_text,
       options,
       message_id,
@@ -624,6 +625,13 @@ app.post('/bridge/send-approval-request', async (req, res) => {
       sender,
       source,
     });
+    
+    // Add a 45s timeout wrapper (backend timeout is 60s, so we have margin)
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Sending message to WhatsApp group timed out after 45s')), 45000);
+    });
+    
+    const result = await Promise.race([sendPromise, timeoutPromise]);
     
     logger.info({
       message_id,
