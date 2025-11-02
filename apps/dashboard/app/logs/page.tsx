@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { useLogs } from "@/lib/hooks/useLogs";
 import { Badge } from "@/components/ui/badge";
@@ -13,17 +13,51 @@ import { Log } from "@/lib/api";
 // Simple Tooltip component for logs
 function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) {
   const [show, setShow] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  
+  useEffect(() => {
+    if (!show || !triggerRef.current) return;
+    
+    const trigger = triggerRef.current;
+    const rect = trigger.getBoundingClientRect();
+    const tooltipWidth = 500;
+    const tooltipHeight = 300; // Estimation
+    
+    // Positionner à droite, centré verticalement
+    let left = rect.right + 8;
+    let top = rect.top + rect.height / 2 - tooltipHeight / 2;
+    
+    // Ajuster si dépasse la viewport
+    if (left + tooltipWidth > window.innerWidth - 8) {
+      // Mettre à gauche si pas de place à droite
+      left = rect.left - tooltipWidth - 8;
+    }
+    if (top < 8) top = 8;
+    if (top + tooltipHeight > window.innerHeight - 8) {
+      top = window.innerHeight - tooltipHeight - 8;
+    }
+    
+    setPosition({ top, left });
+  }, [show]);
   
   return (
-    <div
-      className="relative inline-block w-full"
-      onMouseEnter={() => setShow(true)}
-      onMouseLeave={() => setShow(false)}
-    >
-      {children}
-      {show && (
-        <div className="absolute z-[9999] left-full top-1/2 -translate-y-1/2 ml-2 w-[500px] max-w-[80vw] p-4 bg-popover text-popover-foreground text-sm rounded-md border shadow-lg">
-          <div className="space-y-2 text-sm">
+    <>
+      <div
+        ref={triggerRef}
+        className="inline-block w-full"
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+      >
+        {children}
+      </div>
+      {show && position && (
+        <div 
+          className="fixed z-[9999] w-[500px] max-w-[80vw] p-4 bg-popover text-popover-foreground text-sm rounded-md border shadow-lg"
+          style={{ top: `${position.top}px`, left: `${position.left}px` }}
+          onMouseEnter={() => setShow(true)}
+          onMouseLeave={() => setShow(false)}
+        >          <div className="space-y-2 text-sm">
             <div className="font-semibold mb-2 border-b pb-2">
               {log.message}
             </div>
