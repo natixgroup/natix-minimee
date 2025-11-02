@@ -4,6 +4,10 @@ import { api, EmbeddingsListResponse } from "../api";
 export function useEmbeddings(params?: {
   source?: string;
   search?: string;
+  message_start_date?: string;
+  message_end_date?: string;
+  embedding_start_date?: string;
+  embedding_end_date?: string;
   page?: number;
   limit?: number;
   realTime?: boolean;
@@ -15,8 +19,17 @@ export function useEmbeddings(params?: {
 
   // Memoize params to avoid unnecessary re-renders
   const paramsKey = useMemo(
-    () => JSON.stringify({ source: params?.source || "", search: params?.search || "", page: params?.page || 1, limit: params?.limit || 50 }),
-    [params?.source, params?.search, params?.page, params?.limit]
+    () => JSON.stringify({
+      source: params?.source || "",
+      search: params?.search || "",
+      message_start_date: params?.message_start_date || "",
+      message_end_date: params?.message_end_date || "",
+      embedding_start_date: params?.embedding_start_date || "",
+      embedding_end_date: params?.embedding_end_date || "",
+      page: params?.page || 1,
+      limit: params?.limit || 50
+    }),
+    [params?.source, params?.search, params?.message_start_date, params?.message_end_date, params?.embedding_start_date, params?.embedding_end_date, params?.page, params?.limit]
   );
 
   const fetchEmbeddings = async () => {
@@ -26,6 +39,10 @@ export function useEmbeddings(params?: {
       const result = await api.getEmbeddings({
         source: params?.source,
         search: params?.search,
+        message_start_date: params?.message_start_date,
+        message_end_date: params?.message_end_date,
+        embedding_start_date: params?.embedding_start_date,
+        embedding_end_date: params?.embedding_end_date,
         page: params?.page,
         limit: params?.limit,
       });
@@ -61,7 +78,7 @@ export function useEmbeddings(params?: {
         clearInterval(pollingIntervalRef.current);
       }
     };
-  }, [paramsKey, params?.source, params?.search, params?.page, params?.limit, params?.realTime]);
+  }, [paramsKey, params?.realTime]);
 
   return {
     embeddings: data?.embeddings || [],

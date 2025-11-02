@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useEmbeddings } from "@/lib/hooks/useEmbeddings";
 import {
   Table,
@@ -13,27 +13,165 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { ChevronLeft, ChevronRight, Eye } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, ChevronDown, ChevronUp, Filter, X } from "lucide-react";
 
 const TRUNCATE_LENGTH = 150;
 
+const TIME_FILTERS = [
+  { label: "Last Hour", value: "last_hour" },
+  { label: "Today", value: "today" },
+  { label: "Yesterday", value: "yesterday" },
+  { label: "Last 7 Days", value: "last_7_days" },
+  { label: "Last 30 Days", value: "last_30_days" },
+  { label: "All Time", value: "all" },
+] as const;
+
+type TimeFilter = typeof TIME_FILTERS[number]["value"];
+
+const SOURCES = ["dashboard", "whatsapp", "gmail"] as const;
+
+// Simple Tooltip component
+function Tooltip({ children, content }: { children: React.ReactNode; content: string }) {
+  const [show, setShow] = useState(false);
+  
+  if (content.length <= TRUNCATE_LENGTH) {
+    return <>{children}</>;
+  }
+
+  return (
+    <div
+      className="relative inline-block w-full"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div className="absolute z-50 bottom-full left-0 mb-2 w-80 max-w-[80vw] p-3 bg-popover text-popover-foreground text-sm rounded-md border shadow-lg whitespace-pre-wrap break-words">
+          {content}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function EmbeddingsTable() {
-  const [source, setSource] = useState<string>("all");
+  const [messageTimeFilter, setMessageTimeFilter] = useState<TimeFilter>("all");
+  const [embeddingTimeFilter, setEmbeddingTimeFilter] = useState<TimeFilter>("all");
+  const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState<string>("");
   const [page, setPage] = useState(1);
   const [limit] = useState(50);
   const [selectedEmbedding, setSelectedEmbedding] = useState<number | null>(null);
   const [searchDebounce, setSearchDebounce] = useState<NodeJS.Timeout | null>(null);
   const [realTime, setRealTime] = useState<boolean>(false);
+  const [filtersExpanded, setFiltersExpanded] = useState<boolean>(false);
+
+  // Load filters expanded state from localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("embeddings-filters-expanded");
+      if (saved !== null) {
+        setFiltersExpanded(saved === "true");
+      }
+    }
+  }, []);
+
+  // Save filters expanded state to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("embeddings-filters-expanded", String(filtersExpanded));
+    }
+  }, [filtersExpanded]);
+
+  // Calculate message date range from time filter
+  const messageDateRange = useMemo(() => {
+    const now = new Date();
+    let start_date: Date | null = null;
+    let end_date: Date | null = null;
+
+    switch (messageTimeFilter) {
+      case "last_hour":
+        start_date = new Date(now.getTime() - 60 * 60 * 1000);
+        break;
+      case "today":
+        start_date = new Date(now.setHours(0, 0, 0, 0));
+        break;
+      case "yesterday":
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        start_date = new Date(yesterday.setHours(0, 0, 0, 0));
+        end_date = new Date(yesterday.setHours(23, 59, 59, 999));
+        break;
+      case "last_7_days":
+        start_date = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case "last_30_days":
+        start_date = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case "all":
+        start_date = null;
+        break;
+    }
+
+    return {
+      start_date: start_date?.toISOString(),
+      end_date: end_date?.toISOString(),
+    };
+  }, [messageTimeFilter]);
+
+  // Calculate embedding date range from time filter
+  const embeddingDateRange = useMemo(() => {
+    const now = new Date();
+    let start_date: Date | null = null;
+    let end_date: Date | null = null;
+
+    switch (embeddingTimeFilter) {
+      case "last_hour":
+        start_date = new Date(now.getTime() - 60 * 60 * 1000);
+        break;
+      case "today":
+        start_date = new Date(now.setHours(0, 0, 0, 0));
+        break;
+      case "yesterday":
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        start_date = new Date(yesterday.setHours(0, 0, 0, 0));
+        end_date = new Date(yesterday.setHours(23, 59, 59, 999));
+        break;
+      case "last_7_days":
+        start_date = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case "last_30_days":
+        start_date = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case "all":
+        start_date = null;
+        break;
+    }
+
+    return {
+      start_date: start_date?.toISOString(),
+      end_date: end_date?.toISOString(),
+    };
+  }, [embeddingTimeFilter]);
+
+  // Determine source filter value (first selected source or undefined)
+  const sourceFilter = useMemo(() => {
+    if (selectedSources.size === 0) return undefined;
+    return Array.from(selectedSources)[0];
+  }, [selectedSources]);
 
   const { embeddings, total, totalPages, isLoading, error } = useEmbeddings({
-    source: source && source !== "all" ? source : undefined,
+    source: sourceFilter,
     search: search || undefined,
+    message_start_date: messageDateRange.start_date,
+    message_end_date: messageDateRange.end_date,
+    embedding_start_date: embeddingDateRange.start_date,
+    embedding_end_date: embeddingDateRange.end_date,
     page,
     limit,
     realTime,
@@ -51,9 +189,15 @@ export function EmbeddingsTable() {
     setSearchDebounce(timeout);
   };
 
-  const handleSourceChange = (value: string) => {
-    setSource(value === "all" ? "" : value);
-    setPage(1); // Reset to first page on filter change
+  const toggleSource = (source: string) => {
+    const newSet = new Set(selectedSources);
+    if (newSet.has(source)) {
+      newSet.delete(source);
+    } else {
+      newSet.add(source);
+    }
+    setSelectedSources(newSet);
+    setPage(1);
   };
 
   const truncateText = (text: string, maxLength: number = TRUNCATE_LENGTH) => {
@@ -73,42 +217,134 @@ export function EmbeddingsTable() {
 
   return (
     <>
+      {/* Filters Card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Filter className="h-5 w-5" />
+            Filters
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto h-8 w-8 p-0"
+              onClick={() => setFiltersExpanded(!filtersExpanded)}
+            >
+              {filtersExpanded ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </Button>
+          </CardTitle>
+        </CardHeader>
+        {filtersExpanded && (
+          <CardContent className="space-y-4">
+            {/* Message Date Filter */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Message Date</label>
+              <div className="flex flex-wrap gap-2">
+                {TIME_FILTERS.map((filter) => (
+                  <Button
+                    key={filter.value}
+                    variant={messageTimeFilter === filter.value ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      setMessageTimeFilter(filter.value);
+                      setPage(1);
+                    }}
+                  >
+                    {filter.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {/* Embedding Date Filter */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">Embedding Date</label>
+              <div className="flex flex-wrap gap-2">
+                {TIME_FILTERS.map((filter) => (
+                  <Button
+                    key={filter.value}
+                    variant={embeddingTimeFilter === filter.value ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => {
+                      setEmbeddingTimeFilter(filter.value);
+                      setPage(1);
+                    }}
+                  >
+                    {filter.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {/* Source Filter */}
+            <div>
+              <label className="text-sm font-medium mb-2 block">
+                Source
+                {selectedSources.size > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-2 h-6 px-2"
+                    onClick={() => {
+                      setSelectedSources(new Set());
+                      setPage(1);
+                    }}
+                  >
+                    <X className="h-3 w-3 mr-1" />
+                    Clear
+                  </Button>
+                )}
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {SOURCES.map((source) => (
+                  <Button
+                    key={source}
+                    variant={selectedSources.has(source) ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => toggleSource(source)}
+                  >
+                    {source.charAt(0).toUpperCase() + source.slice(1)}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            {/* Search and Real-time Toggle */}
+            <div className="flex gap-4 items-center">
+              <div className="flex-1">
+                <label className="text-sm font-medium mb-2 block">Search</label>
+                <Input
+                  placeholder="Search in text content..."
+                  onChange={(e) => handleSearchChange(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Options</label>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="realtime-embeddings"
+                    checked={realTime}
+                    onCheckedChange={setRealTime}
+                  />
+                  <Label htmlFor="realtime-embeddings" className="cursor-pointer">
+                    Temps réel
+                  </Label>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      {/* Embeddings Table */}
       <Card>
         <CardHeader>
           <CardTitle>Embeddings ({total} total)</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 flex gap-4 items-center">
-            <Select value={source || "all"} onValueChange={handleSourceChange}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Filter by source" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All sources</SelectItem>
-                <SelectItem value="whatsapp">WhatsApp</SelectItem>
-                <SelectItem value="gmail">Gmail</SelectItem>
-                <SelectItem value="dashboard">Dashboard</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Input
-              placeholder="Search in text content..."
-              onChange={(e) => handleSearchChange(e.target.value)}
-              className="flex-1 max-w-md"
-            />
-
-            <div className="flex items-center gap-2 ml-auto">
-              <Switch
-                id="realtime-embeddings"
-                checked={realTime}
-                onCheckedChange={setRealTime}
-              />
-              <Label htmlFor="realtime-embeddings" className="cursor-pointer">
-                Temps réel
-              </Label>
-            </div>
-          </div>
-
           <div className="rounded-md border max-h-[600px] overflow-auto">
             <Table>
               <TableHeader>
@@ -135,9 +371,11 @@ export function EmbeddingsTable() {
                         {embedding.id}
                       </TableCell>
                       <TableCell className="max-w-md">
-                        <div className="text-sm">
-                          {truncateText(embedding.text, TRUNCATE_LENGTH)}
-                        </div>
+                        <Tooltip content={embedding.text}>
+                          <div className="text-sm">
+                            {truncateText(embedding.text, TRUNCATE_LENGTH)}
+                          </div>
+                        </Tooltip>
                       </TableCell>
                       <TableCell>
                         {embedding.source ? (
@@ -306,4 +544,3 @@ export function EmbeddingsTable() {
     </>
   );
 }
-

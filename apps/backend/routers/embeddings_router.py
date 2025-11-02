@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from typing import Optional
+from datetime import datetime
 from db.database import get_db
 from models import Embedding, Message
 from schemas import EmbeddingResponse, EmbeddingsListResponse, EmbeddingMessageInfo
@@ -77,6 +78,10 @@ async def get_embedding_models():
 async def get_embeddings(
     source: Optional[str] = Query(None, description="Filter by source: whatsapp, gmail, dashboard, or empty for all"),
     search: Optional[str] = Query(None, description="Search text in embedding content"),
+    message_start_date: Optional[datetime] = Query(None, description="Filter by message timestamp (start date)"),
+    message_end_date: Optional[datetime] = Query(None, description="Filter by message timestamp (end date)"),
+    embedding_start_date: Optional[datetime] = Query(None, description="Filter by embedding created_at (start date)"),
+    embedding_end_date: Optional[datetime] = Query(None, description="Filter by embedding created_at (end date)"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=500, description="Items per page"),
     db: Session = Depends(get_db)
@@ -86,6 +91,10 @@ async def get_embeddings(
     
     - **source**: Filter by source (whatsapp/gmail/dashboard). If not in metadata, tries to get from associated message
     - **search**: Search text in the embedding content (case-insensitive)
+    - **message_start_date**: Filter messages by timestamp (start date)
+    - **message_end_date**: Filter messages by timestamp (end date)
+    - **embedding_start_date**: Filter embeddings by created_at (start date)
+    - **embedding_end_date**: Filter embeddings by created_at (end date)
     - **page**: Page number (starts at 1)
     - **limit**: Items per page (max 500)
     """
@@ -94,6 +103,9 @@ async def get_embeddings(
     from sqlalchemy.orm import joinedload
     query = db.query(Embedding).options(joinedload(Embedding.message))
     
+    # Always join with Message for date filtering
+    query = query.outerjoin(Message, Embedding.message_id == Message.id)
+    
     # Apply source filter
     if source:
         # Check both metadata->>'source' (PostgreSQL JSONB) and message.source via JOIN
@@ -101,14 +113,24 @@ async def get_embeddings(
         from sqlalchemy import text as sql_text
         
         # Filter by checking metadata->>'source' OR message.source
-        query = query.outerjoin(
-            Message, Embedding.message_id == Message.id
-        ).filter(
+        query = query.filter(
             or_(
                 Embedding.meta_data['source'].astext == source,  # JSONB operator
                 Message.source == source
             )
         )
+    
+    # Apply message date filters (filter by Message.timestamp)
+    if message_start_date:
+        query = query.filter(Message.timestamp >= message_start_date)
+    if message_end_date:
+        query = query.filter(Message.timestamp <= message_end_date)
+    
+    # Apply embedding date filters (filter by Embedding.created_at)
+    if embedding_start_date:
+        query = query.filter(Embedding.created_at >= embedding_start_date)
+    if embedding_end_date:
+        query = query.filter(Embedding.created_at <= embedding_end_date)
     
     # Apply text search filter
     if search:

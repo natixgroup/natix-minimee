@@ -196,3 +196,31 @@ class ActionLog(Base):
     message = relationship("Message", backref="action_logs")
     user_rel = relationship("User", backref="action_logs")
 
+
+class PendingApproval(Base):
+    __tablename__ = "pending_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)  # NULL for email drafts
+    conversation_id = Column(String, nullable=True)
+    sender = Column(String, nullable=False)
+    source = Column(String, nullable=False)  # 'whatsapp' or 'gmail'
+    recipient_jid = Column(String, nullable=True)  # For WhatsApp
+    recipient_email = Column(String, nullable=True)  # For Gmail
+    option_a = Column(Text, nullable=False)
+    option_b = Column(Text, nullable=False)
+    option_c = Column(Text, nullable=False)
+    context_summary = Column(Text, nullable=True)
+    original_content_preview = Column(Text, nullable=True)
+    email_subject = Column(String, nullable=True)  # For Gmail emails
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    status = Column(String, nullable=False, default='pending')  # pending/approved/rejected/expired
+    group_message_id = Column(String, nullable=True)  # WhatsApp message ID in group
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True, index=True)
+    reminder_sent_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    message = relationship("Message", backref="pending_approvals")
+    user = relationship("User", backref="pending_approvals")
+

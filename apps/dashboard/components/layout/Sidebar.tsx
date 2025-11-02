@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Home, Bot, FileText, Settings, Moon, Sun, MessageSquare, Sparkles } from "lucide-react";
@@ -19,6 +20,14 @@ const navigation = [
 export function Sidebar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
+  
+  // Use mounted state from useTheme if available, otherwise track it ourselves
+  const [mounted, setMounted] = useState(false);
+
+  // Prevent hydration mismatch by only showing theme-dependent content after mount
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <div className="flex h-full w-64 flex-col border-r bg-sidebar">
@@ -55,7 +64,13 @@ export function Sidebar() {
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="w-full justify-start"
         >
-          {theme === "dark" ? (
+          {!mounted ? (
+            // Render placeholder during SSR to match client
+            <>
+              <Moon className="mr-2 h-4 w-4" />
+              Dark Mode
+            </>
+          ) : theme === "dark" ? (
             <>
               <Sun className="mr-2 h-4 w-4" />
               Light Mode

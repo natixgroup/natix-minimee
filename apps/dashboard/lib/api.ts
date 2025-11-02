@@ -544,6 +544,35 @@ class ApiClient {
     return response.json();
   }
 
+  // WhatsApp Import History
+  async getWhatsAppImportHistory(params?: {
+    userId?: number;
+    limit?: number;
+    offset?: number;
+  }) {
+    const queryParams = new URLSearchParams();
+    if (params?.userId) queryParams.append("user_id", String(params.userId));
+    if (params?.limit) queryParams.append("limit", String(params.limit));
+    if (params?.offset) queryParams.append("offset", String(params.offset));
+    
+    const query = queryParams.toString();
+    return this.request<{
+      items: Array<{
+        conversation_id: string;
+        messages_count: number;
+        embeddings_count: number;
+        chunks_count: number;
+        summaries_count: number;
+        first_import: string;
+        last_import: string;
+      }>;
+      total: number;
+      limit: number;
+      offset: number;
+      has_more: boolean;
+    }>(`/ingest/whatsapp-history${query ? `?${query}` : ""}`);
+  }
+
   async startWhatsAppBridge() {
     // Bridge is always running, just restart to get new QR
     return this.restartWhatsAppBridge();
@@ -673,6 +702,10 @@ class ApiClient {
   async getEmbeddings(params?: {
     source?: string;
     search?: string;
+    message_start_date?: string;
+    message_end_date?: string;
+    embedding_start_date?: string;
+    embedding_end_date?: string;
     page?: number;
     limit?: number;
   }) {

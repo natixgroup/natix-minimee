@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     
+    # Bridge Settings
+    bridge_api_url: str = "http://localhost:3003"
+    approval_reminder_minutes: int = 10
+    approval_expiration_minutes: int = 60
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

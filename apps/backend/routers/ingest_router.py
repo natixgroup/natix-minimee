@@ -2,15 +2,18 @@
 Data ingestion endpoints
 Enhanced with chunking, language detection, summarization
 """
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func, distinct
 from datetime import datetime
+from typing import Optional, List
 import json
 import asyncio
 from db.database import get_db
 from services.ingestion import ingest_whatsapp_file
 from services.logs_service import log_to_db
+from models import Message, Embedding, Summary
 
 router = APIRouter()
 
@@ -316,3 +319,97 @@ async def upload_whatsapp_stream(
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.get("/ingest/whatsapp-history")
+async def get_whatsapp_import_history(
+    user_id: Optional[int] = Query(None, description="Filter by user_id"),
+    limit: int = Query(10, ge=1, le=100, description="Number of results per page"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get import history for WhatsApp conversations
+    Returns aggregated stats per conversation_id
+    """
+    # Base query: messages with source='whatsapp'
+    query = db.query(Message).filter(Message.source == "whatsapp")
+    
+    if user_id:
+        query = query.filter(Message.user_id == user_id)
+    
+    # Group by conversation_id and aggregate
+    # Use SQLAlchemy's func for aggregation
+    results = (
+        db.query(
+            Message.conversation_id,
+            func.count(Message.id).label("messages_count"),
+            func.min(Message.created_at).label("first_import"),
+            func.max(Message.created_at).label("last_import"),
+        )
+        .filter(Message.source == "whatsapp")
+        .group_by(Message.conversation_id)
+    )
+    
+    if user_id:
+        results = results.filter(Message.user_id == user_id)
+    
+    # Get total count for pagination
+    total_count = results.count()
+    
+    # Apply pagination
+    results = results.order_by(func.max(Message.created_at).desc()).offset(offset).limit(limit).all()
+    
+    # Build response with detailed stats
+    history_items = []
+    for result in results:
+        conversation_id = result.conversation_id
+        
+        # Count embeddings for this conversation
+        # Embeddings linked to messages via message_id
+        embeddings_count = (
+            db.query(func.count(Embedding.id))
+            .join(Message, Embedding.message_id == Message.id)
+            .filter(Message.conversation_id == conversation_id)
+            .filter(Message.source == "whatsapp")
+            .scalar() or 0
+        )
+        
+        # Count summaries for this conversation
+        summaries_count = (
+            db.query(func.count(Summary.id))
+            .filter(Summary.conversation_id == conversation_id)
+            .scalar() or 0
+        )
+        
+        # Estimate chunks: count embeddings with chunk metadata OR use summaries as proxy
+        # Chunks are embeddings with metadata chunk=true (but can also be estimated from summaries)
+        chunks_from_embeddings = (
+            db.query(func.count(Embedding.id))
+            .join(Message, Embedding.message_id == Message.id)
+            .filter(Message.conversation_id == conversation_id)
+            .filter(Message.source == "whatsapp")
+            .filter(Embedding.meta_data['chunk'].astext == 'true')
+            .scalar() or 0
+        )
+        
+        # Use summaries count as chunks (1 summary = 1 chunk) or embeddings with chunk metadata
+        chunks_count = max(chunks_from_embeddings, summaries_count)
+        
+        history_items.append({
+            "conversation_id": conversation_id,
+            "messages_count": result.messages_count,
+            "embeddings_count": embeddings_count,
+            "chunks_count": chunks_count,
+            "summaries_count": summaries_count,
+            "first_import": result.first_import.isoformat() if result.first_import else None,
+            "last_import": result.last_import.isoformat() if result.last_import else None,
+        })
+    
+    return {
+        "items": history_items,
+        "total": total_count,
+        "limit": limit,
+        "offset": offset,
+        "has_more": (offset + limit) < total_count
+    }

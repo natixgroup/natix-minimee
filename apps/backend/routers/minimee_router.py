@@ -7,7 +7,8 @@ from datetime import datetime
 from db.database import get_db
 from models import Message
 from schemas import MessageCreate, MessageOptions, ApprovalRequest, ApprovalResponse
-from services.approval_flow import generate_response_options, process_approval, store_email_draft_proposals
+from services.approval_flow import generate_response_options, process_approval, store_email_draft_proposals, send_approval_request_notification, send_pending_approval_reminders
+from models import PendingApproval
 from services.embeddings import store_embedding
 from services.logs_service import log_to_db
 from services.action_logger import log_action, generate_request_id
@@ -59,6 +60,26 @@ async def process_message(
         
         # 3-7. Generate response options (sera loggé dans approval_flow.py et rag.py)
         options = await generate_response_options(db, message, request_id=request_id)
+        
+        # Get pending approval to send notification
+        pending_approval = db.query(PendingApproval).filter(
+            PendingApproval.message_id == message.id,
+            PendingApproval.status == 'pending'
+        ).first()
+        
+        # Send approval request to WhatsApp group via bridge
+        if pending_approval:
+            try:
+                await send_approval_request_notification(db, pending_approval, request_id=request_id)
+            except Exception as e:
+                log_to_db(
+                    db,
+                    "WARNING",
+                    f"Failed to send approval notification to bridge: {str(e)}",
+                    service="minimee",
+                    request_id=request_id,
+                    metadata={"message_id": message.id, "error": str(e)}
+                )
         
         # 7. Log presentation to user
         log_action(
@@ -119,6 +140,28 @@ async def approve_response(
         message = db.query(Message).filter(Message.id == approval_request.message_id).first()
         request_id = generate_request_id()
         
+        # Log approval response received (from bridge/group)
+        log_action(
+            db=db,
+            action_type="approval_response_received",
+            input_data={
+                "message_id": approval_request.message_id,
+                "action": approval_request.action,
+                "option_index": approval_request.option_index,
+                "type": approval_request.type
+            },
+            output_data={
+                "parsed_choice": f"{approval_request.option_index}" if approval_request.option_index is not None else approval_request.action,
+                "validation_status": "valid"
+            },
+            message_id=approval_request.message_id,
+            conversation_id=message.conversation_id if message else None,
+            request_id=request_id,
+            user_id=message.user_id if message else None,
+            source=message.source if message else None,
+            status="success"
+        )
+        
         log_action(
             db=db,
             action_type="user_response",
@@ -136,7 +179,7 @@ async def approve_response(
             status="success"
         )
         
-        result = process_approval(db, approval_request)
+        result = await process_approval(db, approval_request)
         
         # 9. Log action executed
         log_action(
@@ -175,6 +218,39 @@ async def approve_response(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/minimee/pending-approval/by-group-message-id/{group_message_id}")
+async def get_pending_approval_by_group_message_id(
+    group_message_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get pending approval by group_message_id (WhatsApp message ID in group)
+    """
+    try:
+        from models import PendingApproval
+        
+        pending_approval = db.query(PendingApproval).filter(
+            PendingApproval.group_message_id == group_message_id,
+            PendingApproval.status == 'pending'
+        ).first()
+        
+        if not pending_approval:
+            raise HTTPException(status_code=404, detail="Pending approval not found")
+        
+        return {
+            "message_id": pending_approval.message_id,
+            "approval_id": pending_approval.id,
+            "status": pending_approval.status,
+            "conversation_id": pending_approval.conversation_id,  # For email drafts (thread_id)
+            "source": pending_approval.source  # 'whatsapp' or 'gmail'
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_to_db(db, "ERROR", f"Error getting pending approval: {str(e)}", service="minimee")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/minimee/email-draft", response_model=MessageOptions)
 async def propose_email_draft(
     thread_id: str,
@@ -183,41 +259,137 @@ async def propose_email_draft(
 ):
     """
     Generate and propose email draft options for a Gmail thread
-    Stores proposals for approval and can send via WhatsApp
+    Stores proposals for approval and sends via WhatsApp group
     """
+    from datetime import datetime, timedelta
+    from models import GmailThread, Message
+    from services.email_draft import generate_email_drafts_sync
+    from services.logs_service import log_to_db
+    from services.action_logger import generate_request_id
+    
+    request_id = generate_request_id()
+    
     try:
-        from services.email_draft import generate_email_drafts_sync
-        from services.logs_service import log_to_db
+        # Get thread information
+        thread = db.query(GmailThread).filter(
+            GmailThread.thread_id == thread_id,
+            GmailThread.user_id == user_id
+        ).first()
+        
+        if not thread:
+            raise ValueError(f"Thread {thread_id} not found")
+        
+        # Get the last message in thread for context
+        last_message = db.query(Message).filter(
+            Message.conversation_id == thread_id,
+            Message.source == "gmail"
+        ).order_by(Message.timestamp.desc()).first()
+        
+        if not last_message:
+            raise ValueError(f"No messages found in thread {thread_id}")
         
         # Generate draft options
         drafts = generate_email_drafts_sync(db, thread_id, user_id, num_options=3)
         
-        # Create MessageOptions
+        # Get recipient (sender of last message, since we're replying)
+        sender_email = last_message.sender
+        
+        # Prepare context summary (get from last message or RAG)
+        context_summary = last_message.content[:500] if last_message.content else None
+        
+        # Calculate expiration
+        expires_at = datetime.utcnow() + timedelta(minutes=settings.approval_expiration_minutes)
+        
+        # Create PendingApproval for email draft
+        # Use message_id=NULL since email drafts are for threads, not specific messages
+        pending_approval = PendingApproval(
+            message_id=None,  # NULL for email drafts (thread-based)
+            conversation_id=thread_id,
+            sender=sender_email,
+            source='gmail',
+            recipient_jid=None,
+            recipient_email=sender_email,
+            option_a=drafts[0] if len(drafts) > 0 else "",
+            option_b=drafts[1] if len(drafts) > 1 else "",
+            option_c=drafts[2] if len(drafts) > 2 else "",
+            context_summary=context_summary,
+            original_content_preview=last_message.content[:300] if last_message.content else "",
+            email_subject=thread.subject,
+            user_id=user_id,
+            status='pending',
+            expires_at=expires_at
+        )
+        db.add(pending_approval)
+        db.commit()
+        db.refresh(pending_approval)
+        
+        # Send approval request to WhatsApp group via bridge
+        try:
+            await send_approval_request_notification(db, pending_approval, request_id=request_id)
+        except Exception as e:
+            log_to_db(
+                db,
+                "WARNING",
+                f"Failed to send email draft approval notification to bridge: {str(e)}",
+                service="minimee",
+                request_id=request_id,
+                metadata={"thread_id": thread_id, "error": str(e)}
+            )
+        
+        # Create MessageOptions for response
         message_options = MessageOptions(
             options=drafts,
             message_id=0,  # Placeholder for email drafts
             conversation_id=thread_id
         )
         
-        # Store for approval
+        # Also store in old format for backward compatibility
         store_email_draft_proposals(thread_id, message_options)
         
         log_to_db(
             db,
             "INFO",
             f"Proposed {len(drafts)} email draft options for thread {thread_id}",
-            service="minimee"
+            service="minimee",
+            request_id=request_id,
+            metadata={
+                "thread_id": thread_id,
+                "approval_id": pending_approval.id,
+                "subject": thread.subject
+            }
         )
-        
-        # TODO: Send proposals via WhatsApp bridge
-        # Format: "📧 Email draft for [subject]:\nA) [draft1]\nB) [draft2]\nC) [draft3]"
         
         return message_options
     
     except ValueError as e:
-        log_to_db(db, "ERROR", f"Email draft error: {str(e)}", service="minimee")
+        log_to_db(db, "ERROR", f"Email draft error: {str(e)}", service="minimee", request_id=request_id)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        log_to_db(db, "ERROR", f"Email draft error: {str(e)}", service="minimee")
+        log_to_db(db, "ERROR", f"Email draft error: {str(e)}", service="minimee", request_id=request_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/minimee/send-reminders")
+async def send_reminders(
+    db: Session = Depends(get_db)
+):
+    """
+    Send reminders for pending approvals that are older than reminder threshold
+    Can be called periodically or manually
+    """
+    try:
+        results = await send_pending_approval_reminders(db)
+        
+        log_to_db(
+            db,
+            "INFO",
+            f"Reminder check completed: {results['reminders_sent']} reminders sent, {results['checked']} checked",
+            service="minimee",
+            metadata=results
+        )
+        
+        return results
+    except Exception as e:
+        log_to_db(db, "ERROR", f"Error sending reminders: {str(e)}", service="minimee")
         raise HTTPException(status_code=500, detail=str(e))
 

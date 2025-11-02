@@ -141,3 +141,68 @@ export async function initializeMinimeeTeam(sock) {
   }
 }
 
+/**
+ * Send approval request message to Minimee TEAM group
+ * Tries to use interactive buttons, falls back to text if not supported
+ */
+export async function sendApprovalMessageToGroup(sock, approvalData) {
+  try {
+    const { message_text, options, message_id, approval_id } = approvalData;
+    
+    // Find Minimee TEAM group
+    const group = await findGroupByName(sock, GROUP_NAME);
+    if (!group) {
+      throw new Error(`Group "${GROUP_NAME}" not found. Please ensure it's initialized.`);
+    }
+    
+    const groupId = group.id;
+    
+    // Try to send with interactive buttons (Baileys supports buttons)
+    try {
+      // Baileys button format: array of buttons with id and displayText
+      const buttons = [
+        { buttonId: `approve_${approval_id}_A`, buttonText: { displayText: 'A) Option A' }, type: 1 },
+        { buttonId: `approve_${approval_id}_B`, buttonText: { displayText: 'B) Option B' }, type: 1 },
+        { buttonId: `approve_${approval_id}_C`, buttonText: { displayText: 'C) Option C' }, type: 1 },
+        { buttonId: `approve_${approval_id}_NO`, buttonText: { displayText: 'No) Ne pas répondre' }, type: 1 },
+      ];
+      
+      const buttonMessage = {
+        text: message_text,
+        buttons: buttons,
+        headerType: 1,
+      };
+      
+      const sent = await sock.sendMessage(groupId, buttonMessage);
+      const group_message_id = sent.key.id;
+      
+      logger.info({
+        message_id,
+        approval_id,
+        group_message_id,
+        method: 'buttons',
+      }, 'Approval request sent with buttons');
+      
+      return { group_message_id, method: 'buttons' };
+    } catch (buttonError) {
+      // Fallback to plain text message
+      logger.warn({ error: buttonError.message }, 'Button message failed, falling back to text');
+      
+      const sent = await sock.sendMessage(groupId, { text: message_text });
+      const group_message_id = sent.key.id;
+      
+      logger.info({
+        message_id,
+        approval_id,
+        group_message_id,
+        method: 'text',
+      }, 'Approval request sent as text (fallback)');
+      
+      return { group_message_id, method: 'text' };
+    }
+  } catch (error) {
+    logger.error({ error: error.message, message_id, approval_id }, 'Error sending approval message to group');
+    throw error;
+  }
+}
+

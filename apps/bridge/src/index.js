@@ -18,7 +18,7 @@ import QRCode from 'qrcode';
 import express from 'express';
 import cors from 'cors';
 import { logger, logMessage, logConnection } from './logger.js';
-import { sendMessageToBackend, checkBackendHealth } from './webhook.js';
+import { sendMessageToBackend, checkBackendHealth, getPendingApprovalByGroupMessageId, sendApprovalResponse } from './webhook.js';
 import { initializeMinimeeTeam } from './groups.js';
 
 dotenv.config();
@@ -203,21 +203,180 @@ async function startBridge() {
         }
 
         for (const msg of messages) {
-          // Skip status broadcasts and group messages for now (can be configured later)
+          // Skip status broadcasts
           if (msg.key.remoteJid === 'status@broadcast') {
             continue;
           }
 
-          // Skip if message is from a group (unless it mentions the bot)
           const isGroup = msg.key.remoteJid.includes('@g.us');
+          const messageText = extractMessageText(msg.message || {});
+          
+          // Handle group messages (Minimee TEAM)
           if (isGroup) {
-            // For now, skip group messages (can be enhanced later)
-            continue;
+            // Get group name
+            try {
+              const groupMetadata = await sock.groupMetadata(msg.key.remoteJid);
+              const groupName = groupMetadata.subject;
+              
+              // Only process messages from Minimee TEAM group
+              if (groupName === 'Minimee TEAM') {
+                // Filter messages with [🤖 Minimee] prefix to avoid processing our own messages
+                if (messageText && messageText.startsWith('[🤖 Minimee]')) {
+                  continue;
+                }
+                
+                // Check if this is a button response
+                let approvalChoice = null;
+                let messageId = null;
+                
+                // Try to extract from button response
+                if (msg.message?.buttonsResponseMessage) {
+                  const buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
+                  // Format: approve_{approval_id}_{choice}
+                  const match = buttonId.match(/approve_(\d+)_([ABC]|NO)/);
+                  if (match) {
+                    const approvalId = match[1];
+                    const choice = match[2];
+                    
+                    // Map choice to option_index
+                    const choiceMap = { 'A': 0, 'B': 1, 'C': 2, 'NO': 'no' };
+                    approvalChoice = choiceMap[choice];
+                    
+                    // We need to get message_id from approval_id, but for now we'll parse from text
+                    // This is a limitation - we'll improve by storing approval_id in group_message metadata
+                    logger.info({
+                      approvalId,
+                      choice,
+                      buttonId,
+                    }, 'Button response received in group');
+                  }
+                }
+                
+                // If not a button response, try parsing text
+                if (!approvalChoice && messageText) {
+                  const textUpper = messageText.trim().toUpperCase();
+                  // Look for simple responses: "A", "B", "C", "No", "NO"
+                  if (textUpper === 'A' || textUpper.startsWith('A)') || textUpper === '/A') {
+                    approvalChoice = 0;
+                  } else if (textUpper === 'B' || textUpper.startsWith('B)') || textUpper === '/B') {
+                    approvalChoice = 1;
+                  } else if (textUpper === 'C' || textUpper.startsWith('C)') || textUpper === '/C') {
+                    approvalChoice = 2;
+                  } else if (textUpper === 'NO' || textUpper === 'N' || textUpper.startsWith('NO)')) {
+                    approvalChoice = 'no';
+                  }
+                }
+                
+                // If we found a valid choice, forward to backend
+                if (approvalChoice !== null) {
+                  try {
+                    const groupMessageId = msg.key.id;
+                    
+                    // Try to get approval_id from button response first
+                    let approvalId = null;
+                    if (msg.message?.buttonsResponseMessage) {
+                      const buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
+                      const match = buttonId.match(/approve_(\d+)_([ABC]|NO)/);
+                      if (match) {
+                        approvalId = parseInt(match[1]);
+                      }
+                    }
+                    
+                    // Get pending approval info from backend
+                    const pendingApproval = await getPendingApprovalByGroupMessageId(groupMessageId);
+                    
+                    if (!pendingApproval && !approvalId) {
+                      logger.warn({
+                        choice: approvalChoice,
+                        groupMessageId,
+                      }, 'Approval response detected but pending approval not found');
+                      continue;
+                    }
+                    
+                    const messageId = pendingApproval?.message_id || null;
+                    const conversationId = pendingApproval?.conversation_id || null;
+                    // Determine if this is an email draft (message_id is null but conversation_id exists)
+                    const approvalType = (conversationId && messageId === null) ? 'email_draft' : 'whatsapp_message';
+                    const emailThreadId = approvalType === 'email_draft' ? conversationId : null;
+                    
+                    // For email drafts, we need conversation_id (thread_id), not message_id
+                    // For WhatsApp, we need message_id
+                    if (approvalType === 'whatsapp_message' && !messageId) {
+                      logger.warn({
+                        choice: approvalChoice,
+                        groupMessageId,
+                        approvalType,
+                      }, 'Cannot find message_id for WhatsApp approval response');
+                      continue;
+                    }
+                    
+                    if (approvalType === 'email_draft' && !emailThreadId) {
+                      logger.warn({
+                        choice: approvalChoice,
+                        groupMessageId,
+                        approvalType,
+                      }, 'Cannot find email_thread_id for email draft approval response');
+                      continue;
+                    }
+                    
+                    logger.info({
+                      messageId,
+                      emailThreadId,
+                      conversationId,
+                      choice: approvalChoice,
+                      sender: msg.key.participant || msg.key.remoteJid,
+                      groupMessageId,
+                      approvalType,
+                    }, 'Processing approval response');
+                    
+                    // Determine action and option_index
+                    let action = 'yes';
+                    let optionIndex = null;
+                    
+                    if (approvalChoice === 'no') {
+                      action = 'no';
+                    } else if (typeof approvalChoice === 'number') {
+                      optionIndex = approvalChoice;
+                    }
+                    
+                    // Call backend to process approval
+                    const result = await sendApprovalResponse(messageId, optionIndex, action, emailThreadId, approvalType);
+                    
+                    logger.info({
+                      messageId,
+                      emailThreadId,
+                      choice: approvalChoice,
+                      result: result.status,
+                      approvalType,
+                    }, 'Approval response sent to backend');
+                  } catch (error) {
+                    logger.error({ 
+                      error: error.message,
+                      choice: approvalChoice,
+                      stack: error.stack,
+                    }, 'Error processing approval response from group');
+                  }
+                }
+                
+                continue; // Don't process group messages as regular messages
+              }
+              
+              // Skip other groups
+              continue;
+            } catch (error) {
+              // If we can't get group metadata, skip
+              logger.warn({ error: error.message }, 'Error getting group metadata');
+              continue;
+            }
           }
 
-          // Skip own messages
-          const messageText = extractMessageText(msg.message || {});
+          // Skip own messages (non-group)
           if (!messageText) {
+            continue;
+          }
+          
+          // Skip messages with [🤖 Minimee] prefix to avoid loops
+          if (messageText.startsWith('[🤖 Minimee]')) {
             continue;
           }
 
@@ -248,9 +407,6 @@ async function startBridge() {
               messageId: response.message_id,
               optionsCount: response.options?.length || 0,
             }, 'Message processed by backend');
-
-            // TODO: In future, handle response options and approval flow
-            // For now, just log the options
             
           } catch (error) {
             logger.error({ 
@@ -350,6 +506,109 @@ app.post('/restart', async (req, res) => {
       message: 'Bridge restarting, new QR code will be available shortly',
     });
   } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+});
+
+// POST /bridge/send-approval-request - Send approval request to Minimee TEAM group
+app.post('/bridge/send-approval-request', async (req, res) => {
+  try {
+    const { message_id, approval_id, message_text, options, sender, source } = req.body;
+    
+    if (!message_text || !options) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'message_text and options are required',
+      });
+    }
+    
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({
+        status: 'error',
+        message: 'WhatsApp not connected',
+      });
+    }
+    
+    // Import group function
+    const { sendApprovalMessageToGroup } = await import('./groups.js');
+    
+    // Send to group
+    const result = await sendApprovalMessageToGroup(sock, {
+      message_text,
+      options,
+      message_id,
+      approval_id,
+      sender,
+      source,
+    });
+    
+    logger.info({
+      message_id,
+      approval_id,
+      group_message_id: result.group_message_id,
+    }, 'Approval request sent to group');
+    
+    res.json({
+      status: 'success',
+      group_message_id: result.group_message_id,
+      sent: true,
+    });
+  } catch (error) {
+    logger.error({ error: error.message }, 'Error sending approval request to group');
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+    });
+  }
+});
+
+// POST /bridge/send-message - Send message to recipient
+app.post('/bridge/send-message', async (req, res) => {
+  try {
+    const { recipient, message, source } = req.body;
+    
+    if (!recipient || !message) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'recipient and message are required',
+      });
+    }
+    
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({
+        status: 'error',
+        message: 'WhatsApp not connected',
+      });
+    }
+    
+    // For now, only support WhatsApp (Gmail will be handled separately)
+    if (source !== 'whatsapp') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Only WhatsApp source is supported for now',
+      });
+    }
+    
+    const jid = formatJID(recipient);
+    await sock.sendMessage(jid, { text: message });
+    
+    logMessage('outgoing', message, {
+      to: jid,
+      source,
+    });
+    
+    logger.info(`Message sent to ${jid}`);
+    
+    res.json({
+      status: 'success',
+      sent: true,
+      recipient: jid,
+    });
+  } catch (error) {
+    logger.error({ error: error.message, recipient: req.body.recipient }, 'Error sending message');
     res.status(500).json({
       status: 'error',
       message: error.message,

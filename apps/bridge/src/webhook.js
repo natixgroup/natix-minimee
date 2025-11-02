@@ -111,6 +111,82 @@ export async function sendApprovedMessage(messageId, optionIndex) {
 }
 
 /**
+ * Get pending approval by group_message_id
+ * This queries the backend to find the pending_approval
+ */
+export async function getPendingApprovalByGroupMessageId(groupMessageId) {
+  try {
+    const endpoint = `${BACKEND_API_URL}/minimee/pending-approval/by-group-message-id/${groupMessageId}`;
+    
+    const response = await axios.get(endpoint, {
+      timeout: 10000,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    return response.data;
+  } catch (error) {
+    if (error.response && error.response.status === 404) {
+      // Not found - that's okay
+      return null;
+    }
+    logger.error({ error: error.message, groupMessageId }, 'Error getting pending approval');
+    return null;
+  }
+}
+
+/**
+ * Send approval response to backend
+ * Supports both WhatsApp messages (with message_id) and email drafts (with email_thread_id)
+ */
+export async function sendApprovalResponse(messageId, optionIndex, action = 'yes', emailThreadId = null, approvalType = 'whatsapp_message') {
+  const endpoint = `${BACKEND_API_URL}/minimee/approve`;
+
+  try {
+    const payload = {
+      option_index: optionIndex,
+      action: action,
+      type: approvalType,
+    };
+    
+    // For email drafts, use email_thread_id instead of message_id
+    if (approvalType === 'email_draft' && emailThreadId) {
+      payload.email_thread_id = emailThreadId;
+      payload.message_id = 0; // Placeholder, will be ignored by backend
+    } else {
+      payload.message_id = messageId;
+    }
+    
+    logWebhook('send', '/minimee/approve', { messageId, emailThreadId, optionIndex, action, type: approvalType });
+
+    const response = await axios.post(
+      endpoint,
+      payload,
+      {
+        timeout: 30000,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    logWebhook('receive', '/minimee/approve', {
+      status: 'success',
+      sent: response.data.sent,
+    });
+
+    return response.data;
+  } catch (error) {
+    logWebhook('send', '/minimee/approve', {
+      status: 'error',
+      error: error.message,
+    });
+    throw error;
+  }
+}
+
+/**
  * Health check backend
  */
 export async function checkBackendHealth() {
