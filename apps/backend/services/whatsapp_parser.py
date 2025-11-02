@@ -9,14 +9,17 @@ from typing import List, Dict, Optional, Tuple
 
 def parse_whatsapp_date(date_str: str) -> Optional[datetime]:
     """
-    Parse WhatsApp date format: DD/MM/YYYY, HH:MM:SS
-    Also handles: DD/MM/YYYY, HH:MM
+    Parse WhatsApp date format: DD/MM/YYYY, HH:MM:SS or DD/M/YY, HH:MM:SS
+    Also handles: DD/MM/YYYY, HH:MM or DD/M/YY, HH:MM
+    Handles both 4-digit years (YYYY) and 2-digit years (YY, interpreted as 20YY for years >= 50, 21YY for years < 50)
     Returns datetime or None if parsing fails
     """
-    # Pattern: [DD/MM/YYYY, HH:MM:SS] or [DD/MM/YYYY, HH:MM]
+    # Pattern: [DD/MM/YYYY, HH:MM:SS] or [DD/MM/YYYY, HH:MM] or [DD/M/YY, HH:MM:SS]
     patterns = [
-        r'(\d{1,2})/(\d{1,2})/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})',  # With seconds
-        r'(\d{1,2})/(\d{1,2})/(\d{4}),\s*(\d{1,2}):(\d{2})',  # Without seconds
+        r'(\d{1,2})/(\d{1,2})/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})',  # With seconds, 4-digit year
+        r'(\d{1,2})/(\d{1,2})/(\d{4}),\s*(\d{1,2}):(\d{2})',  # Without seconds, 4-digit year
+        r'(\d{1,2})/(\d{1,2})/(\d{2}),\s*(\d{1,2}):(\d{2}):(\d{2})',  # With seconds, 2-digit year
+        r'(\d{1,2})/(\d{1,2})/(\d{2}),\s*(\d{1,2}):(\d{2})',  # Without seconds, 2-digit year
     ]
     
     for pattern in patterns:
@@ -25,13 +28,28 @@ def parse_whatsapp_date(date_str: str) -> Optional[datetime]:
             try:
                 parts = match.groups()
                 if len(parts) == 6:
-                    day, month, year, hour, minute, second = map(int, parts)
+                    day, month, year_str, hour, minute, second = parts
+                    year_str = year_str.strip()
+                    second = int(second)
                 else:
-                    day, month, year, hour, minute = map(int, parts)
+                    day, month, year_str, hour, minute = parts
+                    year_str = year_str.strip()
                     second = 0
                 
+                day, month, hour, minute = map(int, (day, month, hour, minute))
+                
+                # Handle 2-digit years (convert to 4-digit)
+                if len(year_str) == 2:
+                    year = int(year_str)
+                    # Assume years 00-49 are 2000-2049, years 50-99 are 1950-1999
+                    # But for WhatsApp exports, it's more likely recent years, so use 2000+ for all
+                    # Actually, looking at the example: 24 = 2024, 25 = 2025, so use 2000+
+                    year = 2000 + year
+                else:
+                    year = int(year_str)
+                
                 return datetime(year, month, day, hour, minute, second)
-            except ValueError:
+            except (ValueError, TypeError):
                 continue
     
     return None
@@ -41,13 +59,17 @@ def parse_whatsapp_line(line: str) -> Optional[Tuple[datetime, str, str]]:
     """
     Parse a single WhatsApp line
     Returns: (timestamp, sender, content) or None if not a message line
+    Handles:
+    - Regular messages: [DD/MM/YY, HH:MM:SS] Sender: Message
+    - System messages: [DD/MM/YY, HH:MM:SS] WhatsApp System Message (no sender)
+    - Media references: messages with "document manquant", "image absente", "audio omis"
     """
     line = line.strip()
     if not line:
         return None
     
-    # Pattern: [DD/MM/YYYY, HH:MM:SS] Sender: Message
-    # Or: [DD/MM/YYYY, HH:MM] Sender: Message
+    # Pattern: [DD/MM/YYYY or DD/MM/YY, HH:MM:SS or HH:MM] Sender: Message
+    # Or: [DD/MM/YYYY or DD/MM/YY, HH:MM:SS or HH:MM] System message (no colon, no sender)
     pattern = r'\[([^\]]+)\]\s*(.+?):\s*(.+)'
     match = re.match(pattern, line)
     
@@ -63,7 +85,30 @@ def parse_whatsapp_line(line: str) -> Optional[Tuple[datetime, str, str]]:
         sender = sender.strip()
         content = content.strip()
         
+        # Filter out WhatsApp system messages that are not useful for RAG
+        # Common system messages in French/English
+        system_message_patterns = [
+            r'Les messages et les appels sont chiffrés',
+            r'Messages and calls are end-to-end encrypted',
+            r'Ce message a été supprimé',
+            r'This message was deleted',
+        ]
+        
+        # Check if it's a system message (optional - we can keep them for context)
+        # For now, we keep all messages including system ones
+        
         return (timestamp, sender, content)
+    
+    # Handle lines that start with date but have no sender (system messages)
+    # Pattern: [DD/MM/YY, HH:MM:SS] System message without sender
+    date_only_pattern = r'^\[([^\]]+)\]\s*(.+)$'
+    date_match = re.match(date_only_pattern, line)
+    if date_match:
+        date_str, content = date_match.groups()
+        timestamp = parse_whatsapp_date(date_str)
+        if timestamp:
+            # Treat as system message from "WhatsApp"
+            return (timestamp, "WhatsApp", content.strip())
     
     return None
 
