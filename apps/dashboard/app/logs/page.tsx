@@ -18,14 +18,14 @@ import {
 } from "@/components/ui/tooltip";
 
 export default function LogsPage() {
-  const [level, setLevel] = useState<string>("");
-  const [service, setService] = useState<string>("");
+  const [level, setLevel] = useState<string>("all");
+  const [service, setService] = useState<string>("all");
   const [page, setPage] = useState(0);
   const limit = 50;
 
   const { data, isLoading, isError } = useLogs({
-    level: level || undefined,
-    service: service || undefined,
+    level: level level: level || undefined,level: level || undefined, level !== "all" ? level : undefined,
+    service: service service: service || undefined,service: service || undefined, service !== "all" ? service : undefined,
     limit,
     offset: page * limit,
   });
@@ -66,7 +66,7 @@ export default function LogsPage() {
               <SelectValue placeholder="All Levels" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Levels</SelectItem>
+              <SelectItem value="all">All Levels</SelectItem>
               <SelectItem value="ERROR">ERROR</SelectItem>
               <SelectItem value="WARNING">WARNING</SelectItem>
               <SelectItem value="INFO">INFO</SelectItem>
@@ -79,7 +79,7 @@ export default function LogsPage() {
               <SelectValue placeholder="All Services" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Services</SelectItem>
+              <SelectItem value="all">All Services</SelectItem>
               <SelectItem value="api">API</SelectItem>
               <SelectItem value="frontend">Frontend</SelectItem>
               <SelectItem value="minimee">Minimee</SelectItem>
