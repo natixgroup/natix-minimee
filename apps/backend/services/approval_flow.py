@@ -81,17 +81,44 @@ async def generate_response_options(
     # Generate multiple options (sera loggé dans llm_router.py)
     options = await generate_multiple_options(full_prompt, num_options, db, request_id=request_id, message_id=message.id, user_id=message.user_id)
     
-    # Log response options generated
+    # Log response options generated with full details
+    log_to_db(
+        db,
+        "INFO",
+        f"{len(options)} options generated for message_id {message.id}",
+        service="approval_flow",
+        request_id=request_id,
+        metadata={
+            "message_id": message.id,
+            "conversation_id": message.conversation_id,
+            "num_options_requested": num_options,
+            "options_count": len(options),
+            "options": options,  # Toutes les options complètes
+            "option_1": options[0] if len(options) > 0 else None,
+            "option_2": options[1] if len(options) > 1 else None,
+            "option_3": options[2] if len(options) > 2 else None,
+            "message_content": message.content,
+            "user_id": message.user_id,
+            "source": message.source,
+            "agent_id": agent.id if agent else None,
+            "agent_name": agent.name if agent else None,
+            "has_context": bool(context),
+            "context_length": len(context) if context else 0,
+        }
+    )
+    
+    # Also log via log_action for action tracking
     log_action(
         db=db,
         action_type="response_options",
         input_data={
             "message_id": message.id,
-            "num_options_requested": num_options
+            "num_options_requested": num_options,
+            "message_content": message.content,
         },
         output_data={
             "options_count": len(options),
-            "options_preview": [opt[:100] for opt in options[:3]]  # Preview des 3 premiers
+            "options": options,  # Toutes les options complètes
         },
         message_id=message.id,
         conversation_id=message.conversation_id,
@@ -270,12 +297,30 @@ Répondez: A, B, C ou No"""
                 "sender": pending_approval.sender,
                 "source": pending_approval.source,
                 "original_content": pending_approval.original_content_preview,
+                "original_content_full": pending_approval.original_content if hasattr(pending_approval, 'original_content') else None,
                 "message_content": message.content if message else None,
+                "message_id_full": message.id if message else None,
+                "conversation_id": pending_approval.conversation_id,
                 "context_summary": pending_approval.context_summary,
                 "option_a": pending_approval.option_a,
                 "option_b": pending_approval.option_b,
                 "option_c": pending_approval.option_c,
+                "options_count": sum([
+                    1 if pending_approval.option_a else 0,
+                    1 if pending_approval.option_b else 0,
+                    1 if pending_approval.option_c else 0,
+                ]),
+                "all_options": [
+                    opt for opt in [
+                        {"label": "Option A", "content": pending_approval.option_a} if pending_approval.option_a else None,
+                        {"label": "Option B", "content": pending_approval.option_b} if pending_approval.option_b else None,
+                        {"label": "Option C", "content": pending_approval.option_c} if pending_approval.option_c else None,
+                    ] if opt is not None
+                ],
                 "email_subject": pending_approval.email_subject,
+                "user_id": pending_approval.user_id,
+                "created_at": pending_approval.created_at.isoformat() if pending_approval.created_at else None,
+                "bridge_response": bridge_response,  # Réponse complète du bridge
             }
         )
         
