@@ -517,14 +517,154 @@ async function startBridge() {
       }
     });
 
-    // Handle message sending errors
+    // Handle message sending errors and poll updates
     sock.ev.on('messages.update', async (updates) => {
       for (const update of updates) {
+        // Handle message sending errors
         if (update.update?.status === 'ERROR') {
           logger.error({
             messageId: update.key.id,
             status: update.update.status,
           }, 'Message sending failed');
+        }
+        
+        // Handle poll vote updates
+        if (update.update?.pollUpdateMessage) {
+          const pollUpdate = update.update.pollUpdateMessage;
+          const pollMessageKey = pollUpdate.pollCreationMessageKey;
+          
+          if (!pollMessageKey || !pollMessageKey.id) {
+            continue;
+          }
+          
+          try {
+            // Check if this poll is from Minimee TEAM group
+            const isGroup = pollMessageKey.remoteJid?.includes('@g.us');
+            if (!isGroup) {
+              continue;
+            }
+            
+            // Get group metadata to verify it's Minimee TEAM
+            try {
+              const groupMetadata = await sock.groupMetadata(pollMessageKey.remoteJid);
+              if (groupMetadata.subject !== 'Minimee TEAM') {
+                continue;
+              }
+            } catch (error) {
+              logger.warn({ error: error.message }, 'Could not get group metadata for poll update');
+              continue;
+            }
+            
+            // Get selected vote options
+            const selectedOptions = pollUpdate.vote?.selectedOptions || pollUpdate.vote?.selectedOptionIds || [];
+            if (selectedOptions.length === 0) {
+              logger.warn('Poll vote update has no selected options');
+              continue;
+            }
+            
+            // Map poll option index (0, 1, 2, 3) to approval choice (A, B, C, NO)
+            // Poll values are: ["A) Option A", "B) Option B", "C) Option C", "No) Ne pas répondre"]
+            // Index 0 = A (option_index 0)
+            // Index 1 = B (option_index 1)
+            // Index 2 = C (option_index 2)
+            // Index 3 = NO (action 'no')
+            const selectedIndex = selectedOptions[0]; // Single choice poll, take first vote
+            
+            let approvalChoice = null;
+            if (selectedIndex === 0) {
+              approvalChoice = 0; // A
+            } else if (selectedIndex === 1) {
+              approvalChoice = 1; // B
+            } else if (selectedIndex === 2) {
+              approvalChoice = 2; // C
+            } else if (selectedIndex === 3) {
+              approvalChoice = 'no'; // NO
+            } else {
+              logger.warn({ selectedIndex }, 'Invalid poll vote index');
+              continue;
+            }
+            
+            logger.info({
+              selectedIndex,
+              approvalChoice,
+              pollMessageId: pollMessageKey.id,
+              sender: update.key.participant || update.key.remoteJid,
+            }, 'Poll vote received in Minimee TEAM group');
+            
+            // Get pending approval info from backend using the poll message ID as group_message_id
+            const pendingApproval = await getPendingApprovalByGroupMessageId(pollMessageKey.id);
+            
+            if (!pendingApproval) {
+              logger.warn({
+                choice: approvalChoice,
+                pollMessageId: pollMessageKey.id,
+              }, 'Poll vote detected but pending approval not found');
+              continue;
+            }
+            
+            const messageId = pendingApproval?.message_id || null;
+            const conversationId = pendingApproval?.conversation_id || null;
+            // Determine if this is an email draft (message_id is null but conversation_id exists)
+            const approvalType = (conversationId && messageId === null) ? 'email_draft' : 'whatsapp_message';
+            const emailThreadId = approvalType === 'email_draft' ? conversationId : null;
+            
+            // For email drafts, we need conversation_id (thread_id), not message_id
+            // For WhatsApp, we need message_id
+            if (approvalType === 'whatsapp_message' && !messageId) {
+              logger.warn({
+                choice: approvalChoice,
+                pollMessageId: pollMessageKey.id,
+                approvalType,
+              }, 'Cannot find message_id for WhatsApp approval response');
+              continue;
+            }
+            
+            if (approvalType === 'email_draft' && !emailThreadId) {
+              logger.warn({
+                choice: approvalChoice,
+                pollMessageId: pollMessageKey.id,
+                approvalType,
+              }, 'Cannot find email_thread_id for email draft approval response');
+              continue;
+            }
+            
+            logger.info({
+              messageId,
+              emailThreadId,
+              conversationId,
+              choice: approvalChoice,
+              selectedIndex,
+              pollMessageId: pollMessageKey.id,
+              approvalType,
+            }, 'Processing poll vote approval response');
+            
+            // Determine action and option_index
+            let action = 'yes';
+            let optionIndex = null;
+            
+            if (approvalChoice === 'no') {
+              action = 'no';
+            } else if (typeof approvalChoice === 'number') {
+              optionIndex = approvalChoice;
+            }
+            
+            // Call backend to process approval
+            const result = await sendApprovalResponse(messageId, optionIndex, action, emailThreadId, approvalType);
+            
+            logger.info({
+              messageId,
+              emailThreadId,
+              choice: approvalChoice,
+              result: result.status,
+              approvalType,
+            }, 'Poll vote approval response sent to backend');
+            
+          } catch (error) {
+            logger.error({
+              error: error.message,
+              stack: error.stack,
+            }, 'Error processing poll vote update');
+          }
         }
       }
     });

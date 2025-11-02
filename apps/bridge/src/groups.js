@@ -143,7 +143,7 @@ export async function initializeMinimeeTeam(sock) {
 
 /**
  * Send approval request message to Minimee TEAM group
- * Tries to use interactive buttons, falls back to text if not supported
+ * Uses poll format (which works perfectly) instead of buttons
  */
 export async function sendApprovalMessageToGroup(sock, approvalData) {
   try {
@@ -157,64 +157,46 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
     
     const groupId = group.id;
     
-    // Try to send with interactive buttons (Baileys supports buttons)
+    // Use poll format for multi-choice approval requests
     try {
-      // Truncate button text to fit WhatsApp limit (20 chars max per button, but we'll use first 25 and add ...)
-      const truncateButtonText = (text, prefix = '', maxLen = 25) => {
-        const fullText = prefix ? `${prefix} ${text}` : text;
-        if (fullText.length <= maxLen) return fullText;
-        return fullText.substring(0, maxLen - 3) + '...';
-      };
-      
-      // Use actual option texts from options object (options.A, options.B, options.C)
-      // WhatsApp buttons have a character limit, so truncate if needed
-      const buttons = [
-        { 
-          buttonId: `approve_${approval_id}_A`, 
-          buttonText: { displayText: truncateButtonText(options.A || 'Option A', 'A)') }, 
-          type: 1 
-        },
-        { 
-          buttonId: `approve_${approval_id}_B`, 
-          buttonText: { displayText: truncateButtonText(options.B || 'Option B', 'B)') }, 
-          type: 1 
-        },
-        { 
-          buttonId: `approve_${approval_id}_C`, 
-          buttonText: { displayText: truncateButtonText(options.C || 'Option C', 'C)') }, 
-          type: 1 
-        },
-        { 
-          buttonId: `approve_${approval_id}_NO`, 
-          buttonText: { displayText: 'No) Ne pas répondre' }, 
-          type: 1 
-        },
+      // Build poll values from options A, B, C
+      // Note: We'll add "No) Ne pas répondre" as a 4th option
+      const pollValues = [
+        `A) ${options.A || 'Option A'}`,
+        `B) ${options.B || 'Option B'}`,
+        `C) ${options.C || 'Option C'}`,
+        'No) Ne pas répondre',
       ];
       
-      const buttonMessage = {
-        text: message_text,
-        buttons: buttons,
-        headerType: 1,
+      // Create poll message
+      // The poll message ID will be stored as group_message_id in PendingApproval
+      // So we can retrieve approval info later using getPendingApprovalByGroupMessageId
+      const pollMessage = {
+        poll: {
+          name: message_text,
+          values: pollValues,
+          selectableCount: 1, // Single choice only
+        }
       };
       
-      const sent = await sock.sendMessage(groupId, buttonMessage);
+      const sent = await sock.sendMessage(groupId, pollMessage);
       const group_message_id = sent.key.id;
       
       logger.info({
         message_id,
         approval_id,
         group_message_id,
-        method: 'buttons',
-        buttonTexts: buttons.map(b => b.buttonText.displayText),
-      }, 'Approval request sent with buttons');
+        method: 'poll',
+        pollValues: pollValues,
+      }, 'Approval request sent with poll');
       
-      return { group_message_id, method: 'buttons' };
-    } catch (buttonError) {
-      // Fallback to plain text message
+      return { group_message_id, method: 'poll', approval_id };
+    } catch (pollError) {
+      // Fallback to plain text message if poll fails
       logger.warn({ 
-        error: buttonError.message,
-        stack: buttonError.stack 
-      }, 'Button message failed, falling back to text');
+        error: pollError.message,
+        stack: pollError.stack 
+      }, 'Poll message failed, falling back to text');
       
       const sent = await sock.sendMessage(groupId, { text: message_text });
       const group_message_id = sent.key.id;
@@ -226,7 +208,7 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
         method: 'text',
       }, 'Approval request sent as text (fallback)');
       
-      return { group_message_id, method: 'text' };
+      return { group_message_id, method: 'text', approval_id };
     }
   } catch (error) {
     logger.error({ error: error.message, message_id, approval_id }, 'Error sending approval message to group');
