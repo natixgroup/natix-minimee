@@ -5,6 +5,7 @@ Enhanced with top-k similarity search and chunk support
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
 from typing import Optional, List, Tuple, Dict, Union
+from datetime import datetime
 from services.embeddings import generate_embedding, find_similar_messages
 from services.logs_service import log_to_db
 from services.metrics import record_rag_hit
@@ -147,7 +148,7 @@ def find_similar_messages_enhanced(
     db: Session,
     query_text: str,
     limit: int = 10,
-    threshold: float = 0.7,
+    threshold: float = 0.5,  # Reduced from 0.7 to be more permissive
     user_id: Optional[int] = None,
     language: Optional[str] = None,
     use_chunks: bool = True,
@@ -163,14 +164,25 @@ def find_similar_messages_enhanced(
     vector_str = "[" + ",".join(map(str, query_vector)) + "]"
     
     # Build query with optional filters - use CAST instead of ::type in params
+    # For chunks, use conversation_id from metadata (stored during ingestion)
     query_sql = """
         SELECT
-            m.id, m.content, m.sender, m.timestamp, m.source,
+            m.id, m.content, m.sender, m.timestamp, 
+            COALESCE(m.source, e.metadata->>'source') as source,
             m.conversation_id, m.user_id, m.created_at,
             m.recipient, m.recipients,
+            e.id as embedding_id,
+            e.text as embedding_text,
             1 - (e.vector <=> CAST(:query_vector AS vector)) as similarity,
             e.metadata->>'tags' as tags,
-            CASE WHEN e.metadata->>'chunk' = 'true' THEN TRUE ELSE FALSE END as is_chunk
+            CASE WHEN e.metadata->>'chunk' = 'true' THEN TRUE ELSE FALSE END as is_chunk,
+            COALESCE(m.conversation_id, e.metadata->>'conversation_id') as effective_conversation_id,
+            COALESCE(m.user_id, (
+                SELECT DISTINCT msg.user_id 
+                FROM messages msg 
+                WHERE msg.conversation_id = COALESCE(m.conversation_id, e.metadata->>'conversation_id')
+                LIMIT 1
+            )) as effective_user_id
         FROM embeddings e
         LEFT JOIN messages m ON e.message_id = m.id
         WHERE 1 - (e.vector <=> CAST(:query_vector AS vector)) >= :threshold
@@ -183,8 +195,18 @@ def find_similar_messages_enhanced(
         "limit": limit
     }
     
+    # Filter by user_id: for messages use m.user_id, for chunks use conversation_id from metadata
+    # Note: Chunks without conversation_id in metadata (old chunks) won't be filtered by user_id
+    # This is acceptable if all data belongs to the same user or for backward compatibility
     if user_id:
-        query_sql += " AND m.user_id = :user_id"
+        query_sql += """ AND (
+            m.user_id = :user_id 
+            OR (e.metadata->>'chunk' = 'true' AND EXISTS (
+                SELECT 1 FROM messages msg 
+                WHERE msg.conversation_id = COALESCE(m.conversation_id, e.metadata->>'conversation_id')
+                AND msg.user_id = :user_id
+            ))
+        )"""
         params["user_id"] = user_id
     
     if language:
@@ -223,7 +245,8 @@ def find_similar_messages_enhanced(
     # Format results with summary lookup if chunk
     formatted_results = []
     for row in results:
-        if row.id:  # Has message
+        # Handle both messages and chunks
+        if row.id:  # Has message (regular message embedding)
             msg = Message(
                 id=row.id,
                 content=row.content,
@@ -241,24 +264,53 @@ def find_similar_messages_enhanced(
                 'message': msg,
                 'similarity': float(row.similarity),
             }
+        else:  # Chunk without message_id (chunk embedding)
+            # Create a pseudo-message for chunks using embedding text
+            effective_conv_id = getattr(row, 'effective_conversation_id', None)
+            effective_user_id = getattr(row, 'effective_user_id', None)
             
-            # If chunk, try to get summary
-            if row.is_chunk and row.conversation_id:
-                summary = db.query(Summary).filter(
-                    Summary.conversation_id == row.conversation_id
-                ).first()
-                if summary:
-                    # Parse TL;DR and Tags from summary_text
-                    summary_text = summary.summary_text
-                    if "TL;DR:" in summary_text:
-                        result_dict['summary'] = summary_text.split("TL;DR:")[1].split("Tags:")[0].strip()
-                    if "Tags:" in summary_text:
-                        result_dict['tags'] = summary_text.split("Tags:")[1].strip()
+            # Extract sender from metadata or use first sender
+            chunk_senders = None
+            if hasattr(row, 'embedding_text'):
+                # Try to get sender from metadata
+                pass  # Will be handled below
             
-            if row.tags:
-                result_dict['tags'] = row.tags
+            msg = Message(
+                id=None,  # No message ID for chunks
+                content=getattr(row, 'embedding_text', ''),
+                sender=getattr(row, 'sender', 'Multiple senders'),  # Fallback
+                recipient=None,
+                recipients=None,
+                timestamp=datetime.utcnow(),  # Fallback timestamp
+                source=getattr(row, 'source', 'whatsapp'),
+                conversation_id=effective_conv_id,
+                user_id=effective_user_id,
+                created_at=datetime.utcnow()
+            )
             
-            formatted_results.append(result_dict)
+            result_dict = {
+                'message': msg,
+                'similarity': float(row.similarity),
+            }
+        
+        # If chunk, try to get summary
+        conversation_id_for_summary = getattr(row, 'effective_conversation_id', None) or getattr(row, 'conversation_id', None)
+        if row.is_chunk and conversation_id_for_summary:
+            summary = db.query(Summary).filter(
+                Summary.conversation_id == conversation_id_for_summary
+            ).first()
+            if summary:
+                # Parse TL;DR and Tags from summary_text
+                summary_text = summary.summary_text
+                if "TL;DR:" in summary_text:
+                    result_dict['summary'] = summary_text.split("TL;DR:")[1].split("Tags:")[0].strip()
+                if "Tags:" in summary_text:
+                    result_dict['tags'] = summary_text.split("Tags:")[1].strip()
+        
+        if hasattr(row, 'tags') and row.tags:
+            result_dict['tags'] = row.tags
+        
+        formatted_results.append(result_dict)
     
     return formatted_results
 

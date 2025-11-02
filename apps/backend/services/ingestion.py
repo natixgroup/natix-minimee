@@ -254,6 +254,7 @@ def ingest_whatsapp_file(
                     'recipients_list': sorted(list(set(chunk_recipient_lists))) if chunk_recipient_lists else None,
                     'tags': chunk.get('tags', ''),
                     'source': 'whatsapp',
+                    'conversation_id': conversation_id,  # Store conversation_id for RAG lookup
                 }
                 
                 # Store chunk embedding
