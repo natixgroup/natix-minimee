@@ -254,6 +254,9 @@ Répondez: A, B, C ou No"""
             status="success"
         )
         
+        # Get message content for logging details
+        message = db.query(Message).filter(Message.id == pending_approval.message_id).first()
+        
         log_to_db(
             db,
             "INFO",
@@ -263,7 +266,16 @@ Répondez: A, B, C ou No"""
             metadata={
                 "message_id": pending_approval.message_id,
                 "approval_id": pending_approval.id,
-                "group_message_id": bridge_response.get('group_message_id')
+                "group_message_id": bridge_response.get('group_message_id'),
+                "sender": pending_approval.sender,
+                "source": pending_approval.source,
+                "original_content": pending_approval.original_content_preview,
+                "message_content": message.content if message else None,
+                "context_summary": pending_approval.context_summary,
+                "option_a": pending_approval.option_a,
+                "option_b": pending_approval.option_b,
+                "option_c": pending_approval.option_c,
+                "email_subject": pending_approval.email_subject,
             }
         )
         
