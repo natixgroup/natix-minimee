@@ -212,19 +212,27 @@ def index_gmail_thread(
             stats['embeddings_created'] += 1
             
             # Create embeddings for individual messages (for backward compatibility)
+            # Include sender in text for better RAG search
             chunk_message_ids = chunk.get('message_ids', [])
             for msg_record in message_records:
                 if msg_record['db_message'].id in chunk_message_ids:
+                    parsed = msg_record['parsed']
+                    sender = msg_record['db_message'].sender
+                    content = parsed.get('content', '')
+                    
+                    # Include sender in text for better semantic search
+                    text_with_sender = f"{sender}: {content}" if sender else content
+                    
                     msg_metadata = {
                         'language': msg_record['language'],
                         'chunk_id': embedding.id,
                         'source': 'gmail',
                         'thread_id': thread_id,
-                        'subject': msg_record['parsed'].get('subject', ''),
+                        'subject': parsed.get('subject', ''),
                     }
                     store_embedding(
                         db,
-                        msg_record['parsed']['content'],
+                        text_with_sender,  # Include sender in vectorized text
                         message_id=msg_record['db_message'].id,
                         metadata=msg_metadata
                     )
