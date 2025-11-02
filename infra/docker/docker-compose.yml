@@ -34,6 +34,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://minimee:minimee@postgres:5432/minimee
       - PYTHONUNBUFFERED=1
+      - BRIDGE_API_URL=http://bridge:3003
       - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID:-}
       - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET:-}
       - GMAIL_REDIRECT_URI=${GMAIL_REDIRECT_URI:-http://localhost:3002/auth/gmail/callback}
