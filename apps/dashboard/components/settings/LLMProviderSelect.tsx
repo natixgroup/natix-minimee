@@ -71,50 +71,50 @@ export function LLMProviderSelect() {
       return false;
     }
     
-    // Normalize both model names for comparison
-    const normalizeModelName = (name: string) => {
-      if (!name) return "";
-      return name.toLowerCase()
-        .replace(/:latest$/, "") // Remove :latest tag
-        .replace(/:/g, "") // Remove all colons
-        .replace(/\s+/g, "") // Remove spaces
-        .trim();
-    };
-    
-    const normalizedCurrent = normalizeModelName(modelToCompare);
-    const normalizedModel = normalizeModelName(model);
-    
-    // Exact normalized match
-    if (normalizedCurrent === normalizedModel) return true;
-    
-    // Check if one contains the other (for partial matches like "llama3.2:1b" vs "llama3.2:1b")
-    if (normalizedCurrent && normalizedModel) {
-      if (normalizedCurrent.includes(normalizedModel) || 
-          normalizedModel.includes(normalizedCurrent)) {
-        return true;
-      }
+    // For OpenAI and vLLM, use exact match only (case-insensitive)
+    // This prevents issues like "gpt-4o" matching "gpt-4o-mini"
+    if (provider === "openai" || provider === "vllm") {
+      return modelToCompare.toLowerCase() === model.toLowerCase();
     }
     
-    // For Ollama, also check direct string matching (case-insensitive)
+    // For Ollama, use flexible matching (models can have tags like :latest)
     if (provider === "ollama") {
+      const normalizeModelName = (name: string) => {
+        if (!name) return "";
+        return name.toLowerCase()
+          .replace(/:latest$/, "") // Remove :latest tag
+          .replace(/:/g, "") // Remove all colons
+          .replace(/\s+/g, "") // Remove spaces
+          .trim();
+      };
+      
+      const normalizedCurrent = normalizeModelName(modelToCompare);
+      const normalizedModel = normalizeModelName(model);
+      
+      // Exact normalized match
+      if (normalizedCurrent === normalizedModel) return true;
+      
+      // For Ollama, check if model name starts with base name (e.g., "llama3.2:1b" contains "llama3.2")
+      const getBaseModel = (name: string) => {
+        return name.split(":")[0].toLowerCase();
+      };
+      const currentBase = getBaseModel(modelToCompare);
+      const modelBase = getBaseModel(model);
+      
+      // Match if base names are the same (e.g., both are "llama3.2")
+      if (currentBase === modelBase && currentBase) {
+        return true;
+      }
+      
+      // Also check direct string matching (case-insensitive)
       const currentLower = modelToCompare.toLowerCase();
       const modelLower = model.toLowerCase();
       
       // Exact match
       if (currentLower === modelLower) return true;
       
-      // Check if current model name starts with model name or vice versa
-      // e.g., "llama3.2:1b" matches "llama3.2:1b" (same)
-      // or "llama3.2:1b" contains "llama3.2"
+      // Check if one starts with the other (only for Ollama)
       if (currentLower.startsWith(modelLower) || modelLower.startsWith(currentLower)) {
-        return true;
-      }
-      
-      // Check if they share a common prefix (e.g., both start with "llama3.2")
-      const getBaseModel = (name: string) => {
-        return name.split(":")[0].toLowerCase();
-      };
-      if (getBaseModel(modelToCompare) === getBaseModel(model)) {
         return true;
       }
     }
