@@ -71,7 +71,10 @@ export function AgentList() {
                 <TableCell className="font-medium">{agent.name}</TableCell>
                 <TableCell>{agent.role}</TableCell>
                 <TableCell>
-                  <Badge variant={agent.enabled ? "default" : "secondary"}>
+                  <Badge 
+                    variant={agent.enabled ? "default" : "secondary"}
+                    className={agent.enabled ? "bg-green-600" : ""}
+                  >
                     {agent.enabled ? "Enabled" : "Disabled"}
                   </Badge>
                 </TableCell>

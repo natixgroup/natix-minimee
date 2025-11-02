@@ -3,9 +3,11 @@ LLM Status Router
 Checks LLM provider status and model availability
 """
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
 from config import settings
 from typing import Optional
+from db.database import get_db
 
 router = APIRouter(prefix="/llm", tags=["llm"])
 
@@ -72,27 +74,47 @@ async def check_ollama_model(model_name: str = "llama3.2:1b") -> dict:
 
 
 @router.get("/status")
-async def get_llm_status():
+async def get_llm_status(db: Session = Depends(get_db)):
     """
     Get LLM provider status and model availability
+    Reads provider from database settings first, then falls back to config
     """
-    provider = settings.llm_provider.lower()
+    from models import Setting
+    
+    # Try to get provider from database settings first
+    llm_setting = db.query(Setting).filter(
+        Setting.key == "llm_provider",
+        Setting.user_id == None
+    ).first()
+    
+    if llm_setting and isinstance(llm_setting.value, dict):
+        provider = llm_setting.value.get("provider", settings.llm_provider).lower()
+        model_name = llm_setting.value.get("model")
+    else:
+        # Fallback to config
+        provider = settings.llm_provider.lower()
+        model_name = None
     
     if provider == "ollama":
         # Get model name from settings or default to smaller model
-        model_name = getattr(settings, "ollama_model", "llama3.2:1b") or "llama3.2:1b"
-        return await check_ollama_model(model_name)
+        ollama_model = model_name or getattr(settings, "ollama_model", "llama3.2:1b") or "llama3.2:1b"
+        return await check_ollama_model(ollama_model)
     elif provider == "openai":
+        # Check if API key is configured
+        openai_configured = bool(settings.get_openai_api_key())
+        openai_model = model_name or getattr(settings, "openai_model", "gpt-4o")
         return {
-            "available": True,
+            "available": openai_configured,
             "provider": "openai",
-            "model": getattr(settings, "openai_model", "gpt-3.5-turbo"),
+            "model": openai_model,
+            "error": None if openai_configured else "OpenAI API key not configured. Please configure it in Settings > Integrations > API Keys & Credentials"
         }
     elif provider == "vllm":
+        vllm_model = model_name or getattr(settings, "vllm_model", "unknown")
         return {
             "available": True,
             "provider": "vllm",
-            "model": getattr(settings, "vllm_model", "unknown"),
+            "model": vllm_model,
         }
     else:
         return {
@@ -197,40 +219,43 @@ async def get_all_models():
     all_models = []
     
     # Return static models first (OpenAI and vLLM) for immediate response
-    # OpenAI models (static list)
+    # OpenAI models (static list) - Check if API key is configured
+    from config import settings
+    openai_configured = bool(settings.get_openai_api_key())
+    
     openai_models = [
+        {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "parameters": "Unknown",
+            "context_length": "128K tokens",
+            "available": openai_configured,
+            "description": "Budget level - Fast and cost-effective model for everyday tasks",
+            "location_type": "cloud",
+            "cost": "paid",
+            "cost_info": "Pay per token (lower cost)"
+        },
         {
             "provider": "openai",
             "model": "gpt-4o",
             "parameters": "Unknown",
             "context_length": "128K tokens",
-            "available": True,
-            "description": "OpenAI's most advanced model",
+            "available": openai_configured,
+            "description": "Standard level - OpenAI's most advanced and balanced model",
             "location_type": "cloud",
             "cost": "paid",
             "cost_info": "Pay per token"
         },
         {
             "provider": "openai",
-            "model": "gpt-4-turbo",
+            "model": "gpt-5",
             "parameters": "Unknown",
-            "context_length": "128K tokens",
-            "available": True,
-            "description": "High-performance GPT-4 variant",
+            "context_length": "Unknown",
+            "available": openai_configured,  # Will depend on OpenAI API availability
+            "description": "Premium / VIP level - Next-generation model (when available)",
             "location_type": "cloud",
             "cost": "paid",
-            "cost_info": "Pay per token"
-        },
-        {
-            "provider": "openai",
-            "model": "gpt-3.5-turbo",
-            "parameters": "Unknown",
-            "context_length": "16K tokens",
-            "available": True,
-            "description": "Fast and efficient model",
-            "location_type": "cloud",
-            "cost": "paid",
-            "cost_info": "Pay per token (lower cost)"
+            "cost_info": "Pay per token (premium pricing)"
         },
     ]
     all_models.extend(openai_models)

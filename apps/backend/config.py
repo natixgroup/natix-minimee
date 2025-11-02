@@ -3,6 +3,7 @@ Centralized configuration for Minimee backend
 """
 from pydantic_settings import BaseSettings
 from typing import Optional
+from db.database import SessionLocal
 
 
 class Settings(BaseSettings):
@@ -11,7 +12,8 @@ class Settings(BaseSettings):
     
     # LLM Providers
     llm_provider: str = "ollama"  # ollama, vllm, openai
-    ollama_base_url: str = "http://ollama:11434"
+    ollama_base_url: str = "http://host.docker.internal:11434"  # Ollama sur l'hôte macOS
+    ollama_model: str = "llama3.2:1b"  # Default Ollama model
     vllm_base_url: str = "http://vllm:8000"
     openai_api_key: Optional[str] = None
     
@@ -31,6 +33,37 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+
+    def get_openai_api_key(self) -> Optional[str]:
+        """
+        Get OpenAI API key from database settings first, then fallback to env var
+        This allows runtime configuration via the UI
+        """
+        # Try database first
+        try:
+            db: Session = SessionLocal()
+            try:
+                from models import Setting
+                setting = db.query(Setting).filter(
+                    Setting.key == "openai_api_key",
+                    Setting.user_id == None
+                ).first()
+                
+                if setting and isinstance(setting.value, dict):
+                    api_key = setting.value.get("api_key")
+                    if api_key:
+                        return api_key
+            except Exception:
+                # Database not ready or table doesn't exist yet
+                pass
+            finally:
+                db.close()
+        except Exception:
+            # Database connection failed, fallback to env
+            pass
+        
+        # Fallback to environment variable
+        return self.openai_api_key
 
 
 settings = Settings()

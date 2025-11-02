@@ -68,17 +68,26 @@ def parse_whatsapp_line(line: str) -> Optional[Tuple[datetime, str, str]]:
     return None
 
 
-def parse_whatsapp_export(content: str) -> List[Dict]:
+def parse_whatsapp_export(content: str, user_whatsapp_id: Optional[str] = None) -> List[Dict]:
     """
     Parse complete WhatsApp export file
-    Returns list of message dictionaries with: timestamp, sender, content
+    Returns list of message dictionaries with: timestamp, sender, content, recipient, recipients
     Handles multi-line messages properly
+    Intelligently determines if conversation is 1-1 or group and extracts participants
+    
+    Args:
+        content: WhatsApp export file content
+        user_whatsapp_id: Optional WhatsApp ID of the user (to identify recipient in 1-1 chats)
+    
+    Returns:
+        List of message dicts with recipient/recipients populated
     """
     lines = content.split('\n')
     messages = []
     current_message = None
     current_content_lines = []
     
+    # First pass: parse all messages
     for line in lines:
         parsed = parse_whatsapp_line(line)
         
@@ -106,6 +115,52 @@ def parse_whatsapp_export(content: str) -> List[Dict]:
     if current_message:
         current_message['content'] = '\n'.join(current_content_lines)
         messages.append(current_message)
+    
+    if not messages:
+        return messages
+    
+    # Second pass: Analyze conversation to determine participants
+    # Collect all unique senders
+    unique_senders = set(msg['sender'] for msg in messages)
+    
+    # Determine if 1-1 or group
+    is_group = len(unique_senders) > 2
+    
+    if is_group:
+        # Group conversation: store all participants in recipients array
+        participants = sorted(list(unique_senders))
+        for msg in messages:
+            msg['recipients'] = participants
+            msg['recipient'] = None
+    else:
+        # 1-1 conversation: determine recipient
+        if len(unique_senders) == 2 and user_whatsapp_id:
+            # User is one of the senders, recipient is the other
+            other_sender = next((s for s in unique_senders if s != user_whatsapp_id), None)
+            if other_sender:
+                for msg in messages:
+                    # Recipient is the other person (not the sender of this message)
+                    if msg['sender'] == user_whatsapp_id:
+                        msg['recipient'] = other_sender
+                    else:
+                        msg['recipient'] = user_whatsapp_id
+                    msg['recipients'] = None
+            else:
+                # Couldn't determine, leave recipient as None
+                for msg in messages:
+                    msg['recipient'] = None
+                    msg['recipients'] = None
+        elif len(unique_senders) == 1:
+            # Only one sender (might be user's own messages or incomplete export)
+            for msg in messages:
+                msg['recipient'] = None
+                msg['recipients'] = None
+        else:
+            # Default: use conversation_id as recipient hint if available
+            # This will be handled in ingestion based on conversation_id
+            for msg in messages:
+                msg['recipient'] = None
+                msg['recipients'] = None
     
     return messages
 

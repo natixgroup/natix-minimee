@@ -110,7 +110,7 @@ class ApiClient {
     options?: RequestInit & { timeout?: number }
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    const timeout = options?.timeout || 3000; // Default 3s timeout
+    const timeout = options?.timeout || 10000; // Default 10s timeout (augmenté pour machines lentes)
     
     // Create AbortController for timeout
     const controller = new AbortController();
@@ -241,17 +241,26 @@ class ApiClient {
     end_date?: string;
     limit?: number;
     offset?: number;
+    order_by?: string;
+    order_dir?: "asc" | "desc";
+    group_by_request?: boolean;
   }) {
     const queryParams = new URLSearchParams();
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined) {
+        if (value !== undefined && value !== null && value !== "") {
           queryParams.append(key, String(value));
         }
       });
     }
     const query = queryParams.toString();
-    return this.request<Log[]>(`/logs${query ? `?${query}` : ""}`);
+    return this.request<{
+      logs: Log[];
+      total: number;
+      page: number;
+      limit: number;
+      total_pages: number;
+    }>(`/logs${query ? `?${query}` : ""}`);
   }
 
   // Action Logs
@@ -344,12 +353,12 @@ class ApiClient {
     return response.json();
   }
 
-  // WhatsApp Upload with real-time progress (SSE)
+  // WhatsApp Upload with real-time progress (SSE + Upload progress)
   uploadWhatsAppWithProgress(
     file: File,
     userId: number = 1,
     onProgress: (update: {
-      type: "progress" | "complete" | "error";
+      type: "upload" | "progress" | "complete" | "error";
       step?: string;
       data?: {
         step?: string;
@@ -357,7 +366,9 @@ class ApiClient {
         current?: number;
         total?: number;
         embeddings_created?: number;
+        percent?: number;
       };
+      uploadPercent?: number;
       message?: string;
       conversation_id?: string;
       stats?: UploadStats;
@@ -371,57 +382,87 @@ class ApiClient {
 
     const url = `${this.baseUrl}/ingest/whatsapp-upload-stream`;
     
-    fetch(url, {
-      method: "POST",
-      body: formData,
-    })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error("No response body");
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        const readChunk = (): Promise<void> => {
-          return reader.read().then(({ done, value }) => {
-            if (done) {
-              return;
-            }
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              if (line.startsWith("data: ")) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  onProgress(data);
-                  
-                  if (data.type === "complete" || data.type === "error") {
-                    return;
-                  }
-                } catch (e) {
-                  // Ignore parse errors for heartbeat lines
+    // Use XMLHttpRequest to track upload progress and handle SSE response
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    
+    // Track upload progress
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        const uploadPercent = Math.round((event.loaded / event.total) * 100);
+        onProgress({
+          type: "upload",
+          uploadPercent,
+          data: {
+            step: "uploading",
+            message: `Uploading file... ${uploadPercent}%`,
+            percent: uploadPercent,
+          },
+        });
+      }
+    });
+    
+    let receivedLength = 0;
+    let buffer = "";
+    
+    // Handle streaming SSE response using readystatechange
+    // readyState 3 (LOADING) means response is streaming in
+    xhr.addEventListener("readystatechange", () => {
+      if (xhr.readyState === 3 || xhr.readyState === 4) {
+        // As response arrives, parse SSE events
+        const newData = xhr.responseText.slice(receivedLength);
+        receivedLength = xhr.responseText.length;
+        
+        if (newData) {
+          buffer += newData;
+          
+          // Parse complete SSE lines
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                onProgress(data);
+                
+                if (data.type === "complete" || data.type === "error") {
+                  return;
                 }
+              } catch (e) {
+                // Ignore parse errors for heartbeat lines or incomplete data
               }
             }
-
-            return readChunk();
-          });
-        };
-
-        return readChunk();
-      })
-      .catch((error) => {
-        onError?.(error as Error);
-      });
+          }
+        }
+      }
+    });
+    
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // Process any remaining buffer
+        const lines = buffer.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              onProgress(data);
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+        }
+      } else {
+        onError?.(new Error(`HTTP error! status: ${xhr.status}`));
+      }
+    });
+    
+    xhr.addEventListener("error", () => {
+      onError?.(new Error("Upload failed"));
+    });
+    
+    // Send request
+    xhr.send(formData);
   }
 
   // Gmail

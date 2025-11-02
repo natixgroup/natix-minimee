@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Bot, FileText, Settings, Moon, Sun, MessageSquare } from "lucide-react";
+import { Home, Bot, FileText, Settings, Moon, Sun, MessageSquare, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ const navigation = [
   { name: "Minimee", href: "/minimee", icon: MessageSquare },
   { name: "Agents", href: "/agents", icon: Bot },
   { name: "Logs", href: "/logs", icon: FileText },
+  { name: "Embeddings", href: "/embeddings", icon: Sparkles },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 

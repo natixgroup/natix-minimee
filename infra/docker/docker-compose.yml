@@ -62,6 +62,14 @@ services:
     depends_on:
       - backend
     command: npm run dev
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
     networks:
       - minimee-network
 
@@ -86,19 +94,7 @@ services:
     networks:
       - minimee-network
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: minimee-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    networks:
-      - minimee-network
-
 volumes:
   postgres_data:
   bridge_auth:
-  ollama_data:
 

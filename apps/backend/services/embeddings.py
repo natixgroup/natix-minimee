@@ -8,6 +8,7 @@ from typing import Optional
 from models import Embedding, Message
 from config import settings
 from services.metrics import record_embedding_generation
+from services.action_logger import log_action_context
 
 
 # Load model once (singleton pattern)
@@ -22,22 +23,41 @@ def get_embedding_model() -> SentenceTransformer:
     return _model
 
 
-def generate_embedding(text: str, db: Optional[Session] = None) -> list[float]:
+def generate_embedding(text: str, db: Optional[Session] = None, request_id: Optional[str] = None, user_id: Optional[int] = None) -> list[float]:
     """
     Generate embedding vector for text
     Returns list of floats (384 dimensions by default)
     Tracks metrics: latency, text length
     """
-    start_time = time.time()
+    model_instance = get_embedding_model()
+    model_name = settings.embedding_model
     text_length = len(text)
     
-    model = get_embedding_model()
-    embedding = model.encode(text, convert_to_numpy=True)
+    if db:
+        with log_action_context(
+            db=db,
+            action_type="vectorization",
+            model=model_name,
+            input_data={
+                "text": text[:500],  # Limiter la taille
+                "text_length": text_length
+            },
+            request_id=request_id,
+            user_id=user_id,
+            metadata={"embedding_dim": 384}
+        ) as log:
+            embedding = model_instance.encode(text, convert_to_numpy=True)
+            log.set_output({
+                "embedding_dim": len(embedding),
+                "text_length": text_length
+            })
+    else:
+        embedding = model_instance.encode(text, convert_to_numpy=True)
     
     # Record metrics
-    latency_ms = (time.time() - start_time) * 1000
     if db:
-        record_embedding_generation(db, latency_ms, text_length)
+        # Note: duration déjà mesuré par log_action_context
+        record_embedding_generation(db, 0, text_length)  # Metrics service garde sa logique
     
     return embedding.tolist()
 
@@ -46,13 +66,15 @@ def store_embedding(
     db: Session,
     text: str,
     message_id: Optional[int] = None,
-    metadata: Optional[dict] = None
+    metadata: Optional[dict] = None,
+    request_id: Optional[str] = None,
+    user_id: Optional[int] = None
 ) -> Embedding:
     """
     Generate and store embedding in database
     Supports both individual messages and chunks
     """
-    vector = generate_embedding(text, db=db)
+    vector = generate_embedding(text, db=db, request_id=request_id, user_id=user_id)
     
     # Convert list to pgvector format string
     vector_str = "[" + ",".join(map(str, vector)) + "]"
@@ -63,19 +85,18 @@ def store_embedding(
     
     # Create embedding record using raw SQL for pgvector
     from sqlalchemy import text as sql_text
-    result = db.execute(
-        sql_text("""
-            INSERT INTO embeddings (text, vector, metadata, message_id, created_at)
-            VALUES (:text, :vector::vector, :metadata::jsonb, :message_id, NOW())
-            RETURNING id
-        """),
-        {
-            "text": text,
-            "vector": vector_str,
-            "metadata": metadata_json,
-            "message_id": message_id
-        }
+    # Use bindparam to properly handle pgvector casting
+    stmt = sql_text("""
+        INSERT INTO embeddings (text, vector, metadata, message_id, created_at)
+        VALUES (:text, CAST(:vector AS vector), CAST(:metadata AS jsonb), :message_id, NOW())
+        RETURNING id
+    """).bindparams(
+        text=text,
+        vector=vector_str,
+        metadata=metadata_json if metadata_json else None,
+        message_id=message_id
     )
+    result = db.execute(stmt)
     embedding_id = result.scalar()
     
     # Note: Don't commit here - let caller manage transaction
@@ -104,11 +125,11 @@ def find_similar_messages(
     query = sql_text("""
         SELECT m.id, m.content, m.sender, m.timestamp, m.source, 
                m.conversation_id, m.user_id, m.created_at,
-               1 - (e.vector <=> :query_vector::vector) as similarity
+               1 - (e.vector <=> CAST(:query_vector AS vector)) as similarity
         FROM embeddings e
         JOIN messages m ON e.message_id = m.id
-        WHERE 1 - (e.vector <=> :query_vector::vector) >= :threshold
-        ORDER BY e.vector <=> :query_vector::vector
+        WHERE 1 - (e.vector <=> CAST(:query_vector AS vector)) >= :threshold
+        ORDER BY e.vector <=> CAST(:query_vector AS vector)
         LIMIT :limit
     """)
     

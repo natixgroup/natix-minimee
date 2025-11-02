@@ -1,0 +1,308 @@
+"use client";
+
+import { useState } from "react";
+import { useEmbeddings } from "@/lib/hooks/useEmbeddings";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { ChevronLeft, ChevronRight, Eye } from "lucide-react";
+
+const TRUNCATE_LENGTH = 150;
+
+export function EmbeddingsTable() {
+  const [source, setSource] = useState<string>("all");
+  const [search, setSearch] = useState<string>("");
+  const [page, setPage] = useState(1);
+  const [limit] = useState(50);
+  const [selectedEmbedding, setSelectedEmbedding] = useState<number | null>(null);
+  const [searchDebounce, setSearchDebounce] = useState<NodeJS.Timeout | null>(null);
+  const [realTime, setRealTime] = useState<boolean>(false);
+
+  const { embeddings, total, totalPages, isLoading, error } = useEmbeddings({
+    source: source && source !== "all" ? source : undefined,
+    search: search || undefined,
+    page,
+    limit,
+    realTime,
+  });
+
+  const handleSearchChange = (value: string) => {
+    // Debounce search
+    if (searchDebounce) {
+      clearTimeout(searchDebounce);
+    }
+    const timeout = setTimeout(() => {
+      setSearch(value);
+      setPage(1); // Reset to first page on search
+    }, 500);
+    setSearchDebounce(timeout);
+  };
+
+  const handleSourceChange = (value: string) => {
+    setSource(value === "all" ? "" : value);
+    setPage(1); // Reset to first page on filter change
+  };
+
+  const truncateText = (text: string, maxLength: number = TRUNCATE_LENGTH) => {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + "...";
+  };
+
+  const selectedEmbeddingData = embeddings.find((e) => e.id === selectedEmbedding);
+
+  if (isLoading && embeddings.length === 0) {
+    return <div className="text-muted-foreground">Loading embeddings...</div>;
+  }
+
+  if (error) {
+    return <div className="text-destructive">Error loading embeddings: {error.message}</div>;
+  }
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Embeddings ({total} total)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="mb-4 flex gap-4 items-center">
+            <Select value={source || "all"} onValueChange={handleSourceChange}>
+              <SelectTrigger className="w-[200px]">
+                <SelectValue placeholder="Filter by source" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All sources</SelectItem>
+                <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                <SelectItem value="gmail">Gmail</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Input
+              placeholder="Search in text content..."
+              onChange={(e) => handleSearchChange(e.target.value)}
+              className="flex-1 max-w-md"
+            />
+
+            <div className="flex items-center gap-2 ml-auto">
+              <Switch
+                id="realtime-embeddings"
+                checked={realTime}
+                onCheckedChange={setRealTime}
+              />
+              <Label htmlFor="realtime-embeddings" className="cursor-pointer">
+                Temps réel
+              </Label>
+            </div>
+          </div>
+
+          <div className="rounded-md border max-h-[600px] overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[80px]">ID</TableHead>
+                  <TableHead>Text</TableHead>
+                  <TableHead className="w-[120px]">Source</TableHead>
+                  <TableHead className="w-[120px]">Date</TableHead>
+                  <TableHead className="w-[100px]">Message</TableHead>
+                  <TableHead className="w-[80px]">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {embeddings.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                      No embeddings found
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  embeddings.map((embedding) => (
+                    <TableRow key={embedding.id}>
+                      <TableCell className="text-sm font-mono">
+                        {embedding.id}
+                      </TableCell>
+                      <TableCell className="max-w-md">
+                        <div className="text-sm">
+                          {truncateText(embedding.text, TRUNCATE_LENGTH)}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {embedding.source ? (
+                          <Badge variant="secondary">{embedding.source}</Badge>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-sm">
+                        {new Date(embedding.created_at).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell>
+                        {embedding.message_id ? (
+                          <Badge variant="outline">#{embedding.message_id}</Badge>
+                        ) : (
+                          <span className="text-muted-foreground">Chunk</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedEmbedding(embedding.id)}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="mt-4 flex items-center justify-between">
+              <div className="text-sm text-muted-foreground">
+                Page {page} of {totalPages} ({total} total)
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(Math.max(1, page - 1))}
+                  disabled={page === 1}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(Math.min(totalPages, page + 1))}
+                  disabled={page === totalPages}
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Detail Dialog */}
+      <Dialog open={selectedEmbedding !== null} onOpenChange={(open) => !open && setSelectedEmbedding(null)}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-auto">
+          <DialogHeader>
+            <DialogTitle>Embedding #{selectedEmbedding}</DialogTitle>
+            <DialogDescription>Full embedding details</DialogDescription>
+          </DialogHeader>
+          {selectedEmbeddingData && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-semibold mb-2">Text Content</h3>
+                <div className="p-3 bg-muted rounded-md text-sm whitespace-pre-wrap">
+                  {selectedEmbeddingData.text}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <h3 className="font-semibold mb-2">Source</h3>
+                  <p className="text-sm">
+                    {selectedEmbeddingData.source || <span className="text-muted-foreground">Not specified</span>}
+                  </p>
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-2">Created At</h3>
+                  <p className="text-sm">
+                    {new Date(selectedEmbeddingData.created_at).toLocaleString()}
+                  </p>
+                </div>
+                {selectedEmbeddingData.message_id && (
+                  <div>
+                    <h3 className="font-semibold mb-2">Message ID</h3>
+                    <p className="text-sm">#{selectedEmbeddingData.message_id}</p>
+                  </div>
+                )}
+              </div>
+
+              {selectedEmbeddingData.message && (
+                <div>
+                  <h3 className="font-semibold mb-2">Associated Message</h3>
+                  <div className="p-3 bg-muted rounded-md text-sm space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">From (Sender):</p>
+                        <p className="font-medium">{selectedEmbeddingData.message.sender}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">To:</p>
+                        {selectedEmbeddingData.message.recipient ? (
+                          <p className="font-medium">{selectedEmbeddingData.message.recipient}</p>
+                        ) : selectedEmbeddingData.message.recipients && selectedEmbeddingData.message.recipients.length > 0 ? (
+                          <div>
+                            <p className="font-medium text-xs mb-1">Group ({selectedEmbeddingData.message.recipients.length} participants):</p>
+                            <div className="flex flex-wrap gap-1">
+                              {selectedEmbeddingData.message.recipients.map((r, idx) => (
+                                <span key={idx} className="text-xs bg-background px-1.5 py-0.5 rounded">{r}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-muted-foreground text-xs">Unknown</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t">
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Source:</p>
+                        <p>{selectedEmbeddingData.message.source}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Timestamp:</p>
+                        <p>{new Date(selectedEmbeddingData.message.timestamp).toLocaleString()}</p>
+                      </div>
+                    </div>
+                    {selectedEmbeddingData.message.conversation_id && (
+                      <div className="pt-2 border-t">
+                        <p className="text-xs text-muted-foreground mb-1">Conversation ID:</p>
+                        <p className="text-xs font-mono">{selectedEmbeddingData.message.conversation_id}</p>
+                      </div>
+                    )}
+                    <div className="mt-2 pt-2 border-t">
+                      <p className="text-xs text-muted-foreground mb-1">Content:</p>
+                      <p className="mt-1 whitespace-pre-wrap">{selectedEmbeddingData.message.content}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedEmbeddingData.metadata && (
+                <div>
+                  <h3 className="font-semibold mb-2">Metadata</h3>
+                  <pre className="p-3 bg-muted rounded-md text-xs overflow-auto">
+                    {JSON.stringify(selectedEmbeddingData.metadata, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+

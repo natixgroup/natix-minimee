@@ -12,7 +12,7 @@ export function useLogs(params?: {
   return useQuery({
     queryKey: ["logs", params],
     queryFn: () => api.getLogs(params),
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: 60000, // Refresh every 60 seconds (reduced frequency)
   });
 }
 

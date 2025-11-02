@@ -2,6 +2,7 @@
 SQLAlchemy models for Minimee
 """
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text
+import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
@@ -33,6 +34,8 @@ class Message(Base):
     id = Column(Integer, primary_key=True, index=True)
     content = Column(Text, nullable=False)
     sender = Column(String, nullable=False)
+    recipient = Column(String, nullable=True, index=True)  # For 1-1 conversations
+    recipients = Column(JSONB, nullable=True)  # For group conversations (array of participants)
     timestamp = Column(DateTime, nullable=False, index=True)
     source = Column(String, nullable=False)  # 'whatsapp' or 'gmail'
     conversation_id = Column(String, nullable=True, index=True)
@@ -168,4 +171,28 @@ class Setting(Base):
 
     # Relationships
     user = relationship("User", back_populates="settings")
+
+
+class ActionLog(Base):
+    __tablename__ = "action_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    action_type = Column(String, nullable=False, index=True)  # message_arrived, vectorization, semantic_search, etc.
+    duration_ms = Column("duration_ms", sa.Float(), nullable=True)  # Temps en millisecondes
+    model = Column(String, nullable=True)  # Modèle utilisé
+    input_data = Column("input_data", JSONB, nullable=True)  # Données d'entrée
+    output_data = Column("output_data", JSONB, nullable=True)  # Données de sortie
+    meta_data = Column("metadata", JSONB, nullable=True)  # Renamed to avoid SQLAlchemy reserved keyword
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    conversation_id = Column(String, nullable=True, index=True)
+    request_id = Column(String, nullable=True, index=True)  # Pour tracer un flux complet
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    source = Column(String, nullable=True)  # 'whatsapp', 'gmail', etc.
+    status = Column(String, nullable=True)  # 'success', 'error', 'pending'
+    error_message = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    
+    # Relationships
+    message = relationship("Message", backref="action_logs")
+    user_rel = relationship("User", backref="action_logs")
 

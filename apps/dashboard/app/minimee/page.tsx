@@ -47,8 +47,8 @@ export default function MinimeePage() {
     };
     
     checkModelStatus();
-    // Refresh every 30 seconds
-    const interval = setInterval(checkModelStatus, 30000);
+    // Refresh every 60 seconds (reduced frequency to save CPU)
+    const interval = setInterval(checkModelStatus, 60000);
     return () => clearInterval(interval);
   }, []);
 

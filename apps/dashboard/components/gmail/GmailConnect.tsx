@@ -69,10 +69,19 @@ export function GmailConnect() {
           <Mail className="h-5 w-5" />
           <span>Gmail Status</span>
         </div>
-        <Badge variant={isConnected ? "default" : "secondary"}>
+        <Badge variant={isConnected ? "default" : "secondary"} className={isConnected ? "bg-green-600" : ""}>
           {isConnected ? "Connected" : "Not Connected"}
         </Badge>
       </div>
+
+      {isConnected && (
+        <div className="flex items-center gap-2 p-3 bg-green-50 dark:bg-green-950 rounded-lg">
+          <CheckCircle2 className="h-5 w-5 text-green-600" />
+          <span className="text-sm text-green-800 dark:text-green-200">
+            Gmail is connected and ready to receive emails
+          </span>
+        </div>
+      )}
 
       <div className="space-y-2">
         <Button

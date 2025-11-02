@@ -1,0 +1,70 @@
+# Exclure les dossiers volumineux du watch de Cursor pour réduire la charge CPU
+
+# Node modules
+**/node_modules/
+node_modules/
+
+# Build outputs
+**/.next/
+.next/
+**/dist/
+**/build/
+**/.turbo/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+**/*.so
+**/__pycache__/
+
+# Logs
+**/*.log
+logs/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+**/docker-data/
+**/volumes/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backups
+backups/
+*.sql.gz
+
+# Large binary files that shouldn't be indexed
+*.zip
+*.tar.gz
+*.pdf
+*.mp4
+*.mov
+*.avi
+
+# PostgreSQL data
+postgres_data/
+
+# WhatsApp auth data
+apps/bridge/auth_info/
+

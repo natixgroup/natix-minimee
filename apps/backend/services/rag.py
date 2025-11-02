@@ -8,6 +8,7 @@ from typing import Optional, List, Tuple, Dict
 from services.embeddings import generate_embedding, find_similar_messages
 from services.logs_service import log_to_db
 from services.metrics import record_rag_hit
+from services.action_logger import log_action_context
 from models import Message, Summary
 
 
@@ -17,22 +18,55 @@ def retrieve_context(
     user_id: int,
     limit: int = 5,
     language: Optional[str] = None,
-    use_chunks: bool = True
+    use_chunks: bool = True,
+    sender: Optional[str] = None,
+    recipient: Optional[str] = None,
+    request_id: Optional[str] = None
 ) -> str:
     """
     Retrieve relevant conversation context using RAG with top-k similarity
     Returns formatted context string for LLM prompt
     """
     try:
-        # Use enhanced RAG query
-        similar_results = find_similar_messages_enhanced(
-            db,
-            query,
-            limit=limit,
+        # Use enhanced RAG query with logging
+        with log_action_context(
+            db=db,
+            action_type="semantic_search",
+            model="pgvector",
+            input_data={
+                "query": query[:500],  # Limiter la taille
+                "limit": limit,
+                "user_id": user_id,
+                "language": language,
+                "use_chunks": use_chunks
+            },
+            request_id=request_id,
             user_id=user_id,
-            language=language,
-            use_chunks=use_chunks
-        )
+            metadata={"search_engine": "pgvector"}
+        ) as log:
+            similar_results = find_similar_messages_enhanced(
+                db,
+                query,
+                limit=limit,
+                user_id=user_id,
+                language=language,
+                use_chunks=use_chunks,
+                sender=sender,
+                recipient=recipient,
+                request_id=request_id
+            )
+            
+            # Log results
+            if similar_results:
+                avg_similarity = sum(r['similarity'] for r in similar_results) / len(similar_results)
+                log.set_output({
+                    "results_count": len(similar_results),
+                    "top_similarity": similar_results[0]['similarity'] if similar_results else 0,
+                    "avg_similarity": avg_similarity,
+                    "similarities": [r['similarity'] for r in similar_results[:10]]
+                })
+            else:
+                log.set_output({"results_count": 0})
         
         if not similar_results:
             return "No relevant conversation history found."
@@ -50,10 +84,22 @@ def retrieve_context(
             
             # Only include messages from the same user
             if message and message.user_id == user_id:
+                # Build context line with sender/recipient info
                 context_line = (
                     f"[{message.timestamp.strftime('%Y-%m-%d %H:%M')}] "
-                    f"{message.sender}: {message.content}"
+                    f"{message.sender}"
                 )
+                
+                # Add recipient info if available
+                if message.recipient:
+                    context_line += f" → {message.recipient}"
+                elif message.recipients:
+                    participants_str = ", ".join(message.recipients[:3])  # Limit for display
+                    if len(message.recipients) > 3:
+                        participants_str += f" (+{len(message.recipients) - 3} others)"
+                    context_line += f" → [Group: {participants_str}]"
+                
+                context_line += f": {message.content}"
                 
                 # Add summary if available (for chunks)
                 if summary:
@@ -79,26 +125,30 @@ def find_similar_messages_enhanced(
     threshold: float = 0.7,
     user_id: Optional[int] = None,
     language: Optional[str] = None,
-    use_chunks: bool = True
+    use_chunks: bool = True,
+    sender: Optional[str] = None,
+    recipient: Optional[str] = None,
+    request_id: Optional[str] = None
 ) -> List[Dict]:
     """
     Enhanced similarity search with top-k, language filtering, and chunk support
     Returns list of dicts with: message, similarity, summary (if chunk), tags
     """
-    query_vector = generate_embedding(query_text, db=db)
+    query_vector = generate_embedding(query_text, db=db, request_id=request_id, user_id=user_id)
     vector_str = "[" + ",".join(map(str, query_vector)) + "]"
     
-    # Build query with optional filters
+    # Build query with optional filters - use CAST instead of ::type in params
     query_sql = """
         SELECT
             m.id, m.content, m.sender, m.timestamp, m.source,
             m.conversation_id, m.user_id, m.created_at,
-            1 - (e.vector <=> :query_vector::vector) as similarity,
+            m.recipient, m.recipients,
+            1 - (e.vector <=> CAST(:query_vector AS vector)) as similarity,
             e.metadata->>'tags' as tags,
             CASE WHEN e.metadata->>'chunk' = 'true' THEN TRUE ELSE FALSE END as is_chunk
         FROM embeddings e
         LEFT JOIN messages m ON e.message_id = m.id
-        WHERE 1 - (e.vector <=> :query_vector::vector) >= :threshold
+        WHERE 1 - (e.vector <=> CAST(:query_vector AS vector)) >= :threshold
     """
     
     # Build params dict
@@ -116,14 +166,29 @@ def find_similar_messages_enhanced(
         query_sql += " AND e.metadata->>'language' = :language"
         params["language"] = language
     
+    # Filter by sender (from metadata or message)
+    if sender:
+        query_sql += " AND (e.metadata->>'sender' = :sender OR m.sender = :sender)"
+        params["sender"] = sender
+    
+    # Filter by recipient (1-1 conversations) or participants (groups)
+    if recipient:
+        query_sql += """ AND (
+            m.recipient = :recipient 
+            OR e.metadata->>'recipient' = :recipient
+            OR :recipient = ANY(SELECT jsonb_array_elements_text(m.recipients))
+            OR :recipient = ANY(SELECT jsonb_array_elements_text(e.metadata->'recipients'))
+        )"""
+        params["recipient"] = recipient
+    
     if not use_chunks:
         query_sql += " AND e.metadata->>'chunk' != 'true'"
     
     # Order by chunk priority and similarity
     if use_chunks:
-        query_sql += " ORDER BY is_chunk DESC, e.vector <=> :query_vector::vector"
+        query_sql += " ORDER BY is_chunk DESC, e.vector <=> CAST(:query_vector AS vector)"
     else:
-        query_sql += " ORDER BY e.vector <=> :query_vector::vector"
+        query_sql += " ORDER BY e.vector <=> CAST(:query_vector AS vector)"
     
     query_sql += " LIMIT :limit"
     
@@ -138,6 +203,8 @@ def find_similar_messages_enhanced(
                 id=row.id,
                 content=row.content,
                 sender=row.sender,
+                recipient=getattr(row, 'recipient', None),
+                recipients=getattr(row, 'recipients', None),
                 timestamp=row.timestamp,
                 source=row.source,
                 conversation_id=row.conversation_id,

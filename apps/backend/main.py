@@ -24,7 +24,10 @@ from routers import (
     whatsapp_router,
     minimee_router,
     logs_router,
-    metrics_router
+    metrics_router,
+    llm_router,
+    embeddings_router,
+    openai_router
 )
 
 app = FastAPI(
@@ -98,6 +101,8 @@ app.include_router(minimee_router.router)
 app.include_router(logs_router.router)
 app.include_router(metrics_router.router)
 app.include_router(llm_router.router)
+app.include_router(embeddings_router.router)
+app.include_router(openai_router.router)
 
 
 @app.on_event("startup")

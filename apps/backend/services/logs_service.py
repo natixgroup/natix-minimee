@@ -90,28 +90,61 @@ def get_logs(
     end_date: Optional[datetime] = None,
     limit: int = 100,
     offset: int = 0,
-    request_id: Optional[str] = None
+    request_id: Optional[str] = None,
+    order_by: str = "timestamp",
+    order_dir: str = "desc"
 ):
     """
-    Query logs with filters
+    Query logs with filters, sorting and pagination
+    Supports comma-separated values for level and service (multiple filters)
     """
+    from sqlalchemy import desc, asc, or_
+    
     query = db.query(Log)
     
+    # Support multiple levels (comma-separated)
     if level:
-        query = query.filter(Log.level == level.upper())
+        levels = [l.strip().upper() for l in level.split(",") if l.strip()]
+        if levels:
+            query = query.filter(Log.level.in_(levels))
+    
+    # Support multiple services (comma-separated)
     if service:
-        query = query.filter(Log.service == service)
+        services = [s.strip() for s in service.split(",") if s.strip()]
+        if services:
+            query = query.filter(Log.service.in_(services))
     if start_date:
         query = query.filter(Log.timestamp >= start_date)
     if end_date:
         query = query.filter(Log.timestamp <= end_date)
     if request_id:
         # Filter by request_id in metadata
-        query = query.filter(Log.metadata['request_id'].astext == request_id)
+        query = query.filter(Log.meta_data['request_id'].astext == request_id)
     
-    query = query.order_by(Log.timestamp.desc())
-    total = query.count()
+    # Apply sorting
+    order_field = getattr(Log, order_by, Log.timestamp)
+    if order_dir.lower() == "asc":
+        query = query.order_by(asc(order_field))
+    else:
+        query = query.order_by(desc(order_field))
     
+    # Get logs with limit first (most important)
     logs = query.offset(offset).limit(limit).all()
+    
+    # Count total separately (this can be expensive but needed for pagination)
+    count_query = db.query(Log)
+    
+    if level:
+        count_query = count_query.filter(Log.level == level.upper())
+    if service:
+        count_query = count_query.filter(Log.service == service)
+    if start_date:
+        count_query = count_query.filter(Log.timestamp >= start_date)
+    if end_date:
+        count_query = count_query.filter(Log.timestamp <= end_date)
+    if request_id:
+        count_query = count_query.filter(Log.meta_data['request_id'].astext == request_id)
+    
+    total = count_query.count()
     
     return logs, total

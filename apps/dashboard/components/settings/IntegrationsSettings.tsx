@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { GmailConnect } from "../gmail/GmailConnect";
 import { WhatsAppConnect } from "../whatsapp/WhatsAppConnect";
 import { WhatsAppUpload } from "../upload/WhatsAppUpload";
-import { Database, MessageSquare } from "lucide-react";
+import { OpenAIConfig } from "./OpenAIConfig";
+import { Database, MessageSquare, KeyRound } from "lucide-react";
 
 export function IntegrationsSettings() {
   return (
@@ -89,6 +90,36 @@ export function IntegrationsSettings() {
           </CardHeader>
           <CardContent>
             <WhatsAppConnect />
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* API Keys & Credentials */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <KeyRound className="h-5 w-5 text-muted-foreground" />
+          <div>
+            <h2 className="text-xl font-semibold">API Keys & Credentials</h2>
+            <p className="text-sm text-muted-foreground">
+              Configure API keys for external services and AI providers
+            </p>
+          </div>
+        </div>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2">
+                OpenAI
+              </CardTitle>
+              <Badge variant="secondary">LLM Provider</Badge>
+            </div>
+            <CardDescription>
+              Configure your OpenAI API key to use GPT models. The key will be validated before being saved.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OpenAIConfig />
           </CardContent>
         </Card>
       </div>

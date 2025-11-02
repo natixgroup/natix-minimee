@@ -3,10 +3,11 @@ Approval flow service for message validation
 Supports both WhatsApp messages and email drafts
 """
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from services.llm_router import generate_multiple_options
 from services.rag import retrieve_context, build_prompt_with_context
 from services.agent_manager import select_agent_for_context
+from services.action_logger import log_action_context, log_action
 from models import Message
 from schemas import MessageOptions, ApprovalRequest
 
@@ -16,41 +17,85 @@ _pending_approvals: Dict[int, MessageOptions] = {}
 _pending_email_drafts: Dict[str, MessageOptions] = {}  # key: thread_id
 
 
-def generate_response_options(
+async def generate_response_options(
     db: Session,
     message: Message,
-    num_options: int = 3
+    num_options: int = 3,
+    request_id: Optional[str] = None
 ) -> MessageOptions:
     """
     Generate multiple response options for user approval
     """
-    # Retrieve context using RAG
-    context = retrieve_context(db, message.content, message.user_id)
+    # Retrieve context using RAG (sera loggé dans rag.py)
+    try:
+        context = retrieve_context(db, message.content, message.user_id, request_id=request_id)
+    except Exception as e:
+        from services.logs_service import log_to_db
+        log_to_db(db, "WARNING", f"RAG context error: {str(e)}, using empty context", service="approval_flow")
+        context = ""
     
     # Select appropriate agent
     agent = select_agent_for_context(db, message.content, message.user_id)
     
-    # Build prompt
-    if agent:
-        system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
-        if agent.style:
-            system_prompt += f"\nCommunication style: {agent.style}"
+    # Build prompt with logging
+    with log_action_context(
+        db=db,
+        action_type="prompt_building",
+        model=None,
+        input_data={
+            "message_content": message.content[:500],
+            "agent_id": agent.id if agent else None,
+            "agent_name": agent.name if agent else None,
+            "has_context": bool(context)
+        },
+        message_id=message.id,
+        conversation_id=message.conversation_id,
+        request_id=request_id,
+        user_id=message.user_id,
+        source=message.source,
+        metadata={"num_options": num_options}
+    ) as log:
+        # Build prompt
+        if agent:
+            system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
+            if agent.style:
+                system_prompt += f"\nCommunication style: {agent.style}"
+        else:
+            system_prompt = "You are Minimee, a personal AI assistant."
+        
+    # Build prompt optimized for speed (short responses for WhatsApp)
+    if context:
+        full_prompt = f"{system_prompt}\n\nContext: {context}\n\nUser: {message.content}\n\nShort reply (30 words max):"
     else:
-        system_prompt = "You are Minimee, a personal AI assistant."
+        full_prompt = f"{system_prompt}\n\nUser: {message.content}\n\nShort reply (30 words max):"
+        
+        log.set_output({
+            "system_prompt": system_prompt[:500],
+            "full_prompt_length": len(full_prompt),
+            "context_length": len(context) if context else 0
+        })
     
-    full_prompt = f"{system_prompt}\n\n{context}\n\n{message.content}\n\nGenerate a response:"
+    # Generate multiple options (sera loggé dans llm_router.py)
+    options = await generate_multiple_options(full_prompt, num_options, db, request_id=request_id, message_id=message.id, user_id=message.user_id)
     
-    # Generate multiple options (using sync wrapper - async would need different approach)
-    # For now, use a simple synchronous approach
-    import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    options = loop.run_until_complete(
-        generate_multiple_options(full_prompt, num_options, db)
+    # Log response options generated
+    log_action(
+        db=db,
+        action_type="response_options",
+        input_data={
+            "message_id": message.id,
+            "num_options_requested": num_options
+        },
+        output_data={
+            "options_count": len(options),
+            "options_preview": [opt[:100] for opt in options[:3]]  # Preview des 3 premiers
+        },
+        message_id=message.id,
+        conversation_id=message.conversation_id,
+        request_id=request_id,
+        user_id=message.user_id,
+        source=message.source,
+        status="success"
     )
     
     message_options = MessageOptions(

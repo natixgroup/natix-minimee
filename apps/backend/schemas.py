@@ -121,6 +121,8 @@ class MessageResponse(BaseModel):
     id: int
     content: str
     sender: str
+    recipient: Optional[str]
+    recipients: Optional[List[str]]
     timestamp: datetime
     source: str
     conversation_id: Optional[str]
@@ -192,4 +194,78 @@ class LogResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Action Log Schemas
+class ActionLogResponse(BaseModel):
+    id: int
+    action_type: str
+    duration_ms: Optional[float]
+    model: Optional[str]
+    input_data: Optional[Dict[str, Any]]
+    output_data: Optional[Dict[str, Any]]
+    metadata: Optional[Dict[str, Any]]  # JSON field name is metadata, but model uses meta_data
+    message_id: Optional[int]
+    conversation_id: Optional[str]
+    request_id: Optional[str]
+    user_id: Optional[int]
+    source: Optional[str]
+    status: Optional[str]
+    error_message: Optional[str]
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ActionLogQuery(BaseModel):
+    action_type: Optional[str] = None
+    request_id: Optional[str] = None
+    message_id: Optional[int] = None
+    conversation_id: Optional[str] = None
+    user_id: Optional[int] = None
+    source: Optional[str] = None
+    status: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    limit: int = 100
+    offset: int = 0
+
+
+# Embedding Schemas
+class EmbeddingMessageInfo(BaseModel):
+    """Info about associated message if message_id exists"""
+    id: int
+    content: str
+    sender: str
+    recipient: Optional[str]
+    recipients: Optional[List[str]]
+    source: str
+    conversation_id: Optional[str]
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EmbeddingResponse(BaseModel):
+    id: int
+    text: str
+    source: Optional[str]  # from metadata or message.source
+    metadata: Optional[Dict[str, Any]]
+    message_id: Optional[int]
+    message: Optional[EmbeddingMessageInfo]  # Full message info if exists
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EmbeddingsListResponse(BaseModel):
+    """Paginated response for embeddings list"""
+    embeddings: List[EmbeddingResponse]
+    total: int
+    page: int
+    limit: int
+    total_pages: int
 

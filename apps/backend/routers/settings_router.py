@@ -11,6 +11,49 @@ from schemas import SettingCreate, SettingResponse
 router = APIRouter()
 
 
+def mask_sensitive_settings(setting: Setting) -> Setting:
+    """
+    Mask sensitive information in settings before returning to client
+    """
+    # Clone the setting to avoid modifying the original
+    if setting.key in ["openai_api_key", "gmail_client_secret", "gmail_client_id"]:
+        if isinstance(setting.value, dict):
+            masked_value = setting.value.copy()
+            # Mask API keys
+            if "api_key" in masked_value:
+                api_key = masked_value["api_key"]
+                if api_key and len(api_key) > 12:
+                    masked_value["api_key"] = api_key[:8] + "..." + api_key[-4:]
+                else:
+                    masked_value["api_key"] = "***"
+            # Mask client secrets
+            if "client_secret" in masked_value:
+                secret = masked_value["client_secret"]
+                if secret and len(secret) > 12:
+                    masked_value["client_secret"] = secret[:8] + "..." + secret[-4:]
+                else:
+                    masked_value["client_secret"] = "***"
+            if "client_id" in masked_value:
+                client_id = masked_value["client_id"]
+                if client_id and len(client_id) > 12:
+                    masked_value["client_id"] = client_id[:8] + "..." + client_id[-4:]
+                else:
+                    masked_value["client_id"] = "***"
+            # Create a new Setting object with masked value
+            from models import Setting as SettingModel
+            from datetime import datetime
+            masked_setting = SettingModel(
+                id=setting.id,
+                key=setting.key,
+                value=masked_value,
+                user_id=setting.user_id,
+                created_at=setting.created_at,
+                updated_at=setting.updated_at
+            )
+            return masked_setting
+    return setting
+
+
 @router.get("/settings", response_model=List[SettingResponse])
 async def list_settings(
     user_id: Optional[int] = None,
@@ -22,7 +65,9 @@ async def list_settings(
         query = query.filter(Setting.user_id == user_id)
     else:
         query = query.filter(Setting.user_id == None)  # Global settings
-    return query.all()
+    settings_list = query.all()
+    # Mask sensitive settings before returning
+    return [mask_sensitive_settings(s) for s in settings_list]
 
 
 @router.get("/settings/{key}", response_model=SettingResponse)
@@ -41,7 +86,8 @@ async def get_setting(
     setting = query.first()
     if not setting:
         raise HTTPException(status_code=404, detail="Setting not found")
-    return setting
+    # Mask sensitive settings before returning
+    return mask_sensitive_settings(setting)
 
 
 @router.post("/settings", response_model=SettingResponse)
