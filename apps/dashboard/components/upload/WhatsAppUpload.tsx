@@ -84,25 +84,63 @@ export function WhatsAppUpload() {
       (update) => {
         if (update.type === "upload") {
           // Handle upload progress
+          const uploadPercent = update.uploadPercent || update.data?.percent || 0;
           setUploadStep("uploading");
           setProgressData({
             step: "uploading",
-            message: update.data?.message || `Uploading file... ${update.uploadPercent || 0}%`,
-            percent: update.uploadPercent || update.data?.percent || 0,
-            current: update.uploadPercent,
+            message: update.data?.message || `Uploading file... ${uploadPercent}%`,
+            percent: uploadPercent,
+            current: uploadPercent,
             total: 100,
           });
+          
+          // Once upload is complete, prepare for next step
+          if (uploadPercent >= 100) {
+            // Wait a moment then transition to parsing
+            setTimeout(() => {
+              setUploadStep("parsing");
+              setProgressData({
+                step: "parsing",
+                message: "File uploaded. Starting processing...",
+                percent: 0,
+              });
+            }, 500);
+          }
         } else if (update.type === "progress") {
           // Update step based on progress data
           const step = update.data?.step || update.step || "parsing";
-          setUploadStep(step as UploadStep);
-          setProgressData(update.data || null);
+          
+          // Map step names to our UploadStep type
+          let mappedStep: UploadStep = "parsing";
+          if (step === "parsing" || step === "saving_messages") {
+            mappedStep = "parsing";
+          } else if (step === "chunking") {
+            mappedStep = "chunking";
+          } else if (step === "embedding") {
+            mappedStep = "embedding";
+          } else if (step === "summarizing") {
+            mappedStep = "summarizing";
+          }
+          
+          setUploadStep(mappedStep);
+          
+          // Calculate percent from current/total if not provided
+          let percent = update.data?.percent;
+          if (percent === undefined && update.data?.current !== undefined && update.data?.total !== undefined && update.data.total > 0) {
+            percent = Math.round((update.data.current / update.data.total) * 100);
+          }
+          
+          setProgressData({
+            ...update.data,
+            step: step,
+            percent: percent,
+          });
           
           // Log progress for debugging
           if (update.data) {
             const { current, total, message, embeddings_created } = update.data;
             if (current !== undefined && total !== undefined) {
-              console.log(`Progress: ${message || step} - ${current}/${total}`);
+              console.log(`Progress: ${message || step} - ${current}/${total} (${percent || 0}%)`);
             }
             if (embeddings_created !== undefined) {
               console.log(`Embeddings created: ${embeddings_created}`);
@@ -346,10 +384,22 @@ export function WhatsAppUpload() {
                 <Loader2 className="h-5 w-5 animate-spin text-primary" />
                 <div className="flex-1">
                   <div className="flex items-center justify-between">
-                    <p className="font-medium">{getStepLabel(uploadStep, progressData?.percent)}</p>
-                    {progressData?.percent !== undefined && (
+                    <p className="font-medium">
+                      {getStepLabel(
+                        uploadStep, 
+                        progressData?.percent,
+                        progressData?.current,
+                        progressData?.total
+                      )}
+                    </p>
+                    {(progressData?.percent !== undefined || 
+                      (progressData?.current !== undefined && progressData?.total !== undefined)) && (
                       <p className="font-semibold text-primary text-lg">
-                        {progressData.percent}%
+                        {progressData?.percent !== undefined 
+                          ? `${progressData.percent}%`
+                          : progressData?.total !== undefined && progressData?.total > 0
+                          ? `${Math.round(((progressData.current || 0) / progressData.total) * 100)}%`
+                          : "0%"}
                       </p>
                     )}
                   </div>

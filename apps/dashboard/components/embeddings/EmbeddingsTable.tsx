@@ -219,22 +219,20 @@ export function EmbeddingsTable() {
     <>
       {/* Filters Card */}
       <Card>
-        <CardHeader>
+        <CardHeader 
+          className="cursor-pointer hover:bg-muted/50 transition-colors"
+          onClick={() => setFiltersExpanded(!filtersExpanded)}
+        >
           <CardTitle className="flex items-center gap-2">
             <Filter className="h-5 w-5" />
             Filters
-            <Button
-              variant="ghost"
-              size="sm"
-              className="ml-auto h-8 w-8 p-0"
-              onClick={() => setFiltersExpanded(!filtersExpanded)}
-            >
+            <div className="ml-auto">
               {filtersExpanded ? (
                 <ChevronUp className="h-4 w-4" />
               ) : (
                 <ChevronDown className="h-4 w-4" />
               )}
-            </Button>
+            </div>
           </CardTitle>
         </CardHeader>
         <div

@@ -1,17 +1,23 @@
 """
 Core Minimee messaging endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException
+import json
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from db.database import get_db
 from models import Message
-from schemas import MessageCreate, MessageOptions, ApprovalRequest, ApprovalResponse
+from schemas import MessageCreate, MessageOptions, ApprovalRequest, ApprovalResponse, ChatMessageRequest, ChatMessageResponse
 from services.approval_flow import generate_response_options, process_approval, store_email_draft_proposals, send_approval_request_notification, send_pending_approval_reminders
 from models import PendingApproval
 from services.embeddings import store_embedding
 from services.logs_service import log_to_db
 from services.action_logger import log_action, generate_request_id
+from services.rag import retrieve_context, build_prompt_with_context
+from services.agent_manager import select_agent_for_context
+from services.llm_router import generate_llm_response_stream
+from config import settings
 
 router = APIRouter()
 
@@ -391,5 +397,150 @@ async def send_reminders(
         return results
     except Exception as e:
         log_to_db(db, "ERROR", f"Error sending reminders: {str(e)}", service="minimee")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/minimee/chat/stream")
+async def chat_stream(
+    chat_request: ChatMessageRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Chat endpoint with streaming response
+    Uses RAG for context and streams LLM response token by token
+    """
+    request_id = generate_request_id()
+    conversation_id = chat_request.conversation_id or f"dashboard-user-{chat_request.user_id}"
+    
+    async def event_generator():
+        try:
+            # 1. Store user message in DB
+            user_message = Message(
+                content=chat_request.content,
+                sender="User",
+                timestamp=datetime.utcnow(),
+                source="dashboard",
+                conversation_id=conversation_id,
+                user_id=chat_request.user_id
+            )
+            db.add(user_message)
+            db.commit()
+            db.refresh(user_message)
+            
+            # 2. Generate embedding for user message
+            store_embedding(db, user_message.content, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id)
+            db.commit()
+            
+            # 3. Retrieve context using RAG
+            context = retrieve_context(
+                db,
+                chat_request.content,
+                chat_request.user_id,
+                request_id=request_id
+            )
+            
+            # 4. Select appropriate agent
+            agent = select_agent_for_context(db, chat_request.content, chat_request.user_id)
+            
+            # 5. Build prompt
+            if agent:
+                system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
+                if agent.style:
+                    system_prompt += f"\nCommunication style: {agent.style}"
+            else:
+                system_prompt = "You are Minimee, a personal AI assistant."
+            
+            full_prompt = build_prompt_with_context(chat_request.content, context, user_style=None)
+            full_prompt = f"{system_prompt}\n\n{full_prompt}"
+            
+            # 6. Stream LLM response
+            full_response = ""
+            async for token_data in generate_llm_response_stream(
+                full_prompt,
+                temperature=0.7,
+                max_tokens=512,
+                db=db,
+                request_id=request_id,
+                message_id=user_message.id,
+                user_id=chat_request.user_id
+            ):
+                if "error" in token_data:
+                    yield f"data: {json.dumps({'type': 'error', 'message': token_data['error']})}\n\n"
+                    return
+                
+                if not token_data.get("done", False):
+                    token = token_data.get("token", "")
+                    full_response += token
+                    yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                else:
+                    # Response complete
+                    final_response = token_data.get("response", full_response)
+                    actions = token_data.get("actions", [])
+                    
+                    # 7. Store Minimee response in DB
+                    minimee_message = Message(
+                        content=final_response,
+                        sender="Minimee",
+                        timestamp=datetime.utcnow(),
+                        source="minimee",
+                        conversation_id=conversation_id,
+                        user_id=chat_request.user_id
+                    )
+                    db.add(minimee_message)
+                    db.commit()
+                    db.refresh(minimee_message)
+                    
+                    # 8. Generate embedding for Minimee response
+                    store_embedding(db, minimee_message.content, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id)
+                    db.commit()
+                    
+                    # 9. Send final event
+                    yield f"data: {json.dumps({'type': 'done', 'response': final_response, 'actions': actions, 'message_id': minimee_message.id})}\n\n"
+                    break
+                    
+        except Exception as e:
+            log_to_db(db, "ERROR", f"Chat stream error: {str(e)}", service="minimee", request_id=request_id)
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.get("/minimee/conversations/{conversation_id}/messages", response_model=list[ChatMessageResponse])
+async def get_conversation_messages(
+    conversation_id: str,
+    user_id: int = Query(1, description="User ID"),  # TODO: Get from auth
+    db: Session = Depends(get_db)
+):
+    """
+    Get conversation history
+    Returns all messages for a given conversation_id
+    """
+    try:
+        messages = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.user_id == user_id
+        ).order_by(Message.timestamp.asc()).all()
+        
+        return [
+            ChatMessageResponse(
+                id=msg.id,
+                content=msg.content,
+                sender=msg.sender,
+                timestamp=msg.timestamp,
+                source=msg.source,
+                conversation_id=msg.conversation_id
+            )
+            for msg in messages
+        ]
+    except Exception as e:
+        log_to_db(db, "ERROR", f"Error fetching conversation messages: {str(e)}", service="minimee")
         raise HTTPException(status_code=500, detail=str(e))
 

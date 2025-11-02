@@ -269,3 +269,22 @@ class EmbeddingsListResponse(BaseModel):
     limit: int
     total_pages: int
 
+
+# Chat Schemas
+class ChatMessageRequest(BaseModel):
+    content: str
+    user_id: int
+    conversation_id: Optional[str] = None
+
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    content: str
+    sender: str
+    timestamp: datetime
+    source: str
+    conversation_id: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+

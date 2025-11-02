@@ -698,6 +698,94 @@ class ApiClient {
     );
   }
 
+  // Chat streaming
+  async chatStream(
+    content: string,
+    userId: number,
+    conversationId?: string,
+    onToken?: (token: string) => void,
+    onComplete?: (response: string, actions: any[]) => void,
+    onError?: (error: Error) => void
+  ) {
+    try {
+      const response = await fetch(`${this.baseUrl}/minimee/chat/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          content,
+          user_id: userId,
+          conversation_id: conversationId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              
+              if (data.type === "token" && onToken) {
+                onToken(data.token);
+              } else if (data.type === "done") {
+                if (onComplete) {
+                  onComplete(data.response || "", data.actions || []);
+                }
+                return;
+              } else if (data.type === "error") {
+                throw new Error(data.message || "Unknown error");
+              }
+            } catch (e) {
+              // Skip malformed JSON
+              if (e instanceof Error && e.message !== "Unexpected end of JSON input") {
+                if (onError) {
+                  onError(e);
+                }
+                return;
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (onError) {
+        onError(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  }
+
+  // Get conversation messages
+  async getConversationMessages(conversationId: string, userId: number = 1) {
+    return this.request<Array<{
+      id: number;
+      content: string;
+      sender: string;
+      timestamp: string;
+      source: string;
+      conversation_id: string | null;
+    }>>(`/minimee/conversations/${conversationId}/messages?user_id=${userId}`);
+  }
+
   // Embeddings
   async getEmbeddings(params?: {
     source?: string;
