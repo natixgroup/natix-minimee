@@ -676,6 +676,23 @@ async def chat_direct(
             return_details=True
         )
         
+        # Log RAG results for debugging
+        log_to_db(db, "INFO", 
+            f"RAG context retrieved: {rag_details.get('results_count', 0)} results, "
+            f"top_similarity: {rag_details.get('top_similarity', 0):.2f}, "
+            f"context_length: {len(context)} chars",
+            service="minimee_router",
+            request_id=request_id,
+            user_id=chat_request.user_id
+        )
+        if rag_details.get('results'):
+            log_to_db(db, "DEBUG",
+                f"RAG top results: {[{'content': r.get('content', '')[:50], 'similarity': r.get('similarity', 0):.2f, 'sender': r.get('sender', '')} for r in rag_details['results'][:3]]}",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id
+            )
+        
         # 4. Select appropriate agent
         agent = select_agent_for_context(db, chat_request.content, chat_request.user_id)
         
@@ -689,6 +706,14 @@ async def chat_direct(
         
         full_prompt = build_prompt_with_context(chat_request.content, context, user_style=None)
         full_prompt = f"{system_prompt}\n\n{full_prompt}"
+        
+        # Log final prompt length for debugging
+        log_to_db(db, "DEBUG",
+            f"Final prompt length: {len(full_prompt)} chars, context included: {bool(context)}",
+            service="minimee_router",
+            request_id=request_id,
+            user_id=chat_request.user_id
+        )
         
         # 6. Generate LLM response (non-streaming, synchronous)
         response = await generate_llm_response(

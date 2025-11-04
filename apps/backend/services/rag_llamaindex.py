@@ -108,10 +108,14 @@ def retrieve_context(
             user_id=user_id,
             metadata={"search_engine": "llamaindex" if settings.rag_rerank_enabled else "pgvector"}
         ) as log:
+            # Reduce threshold when filtering by conversation_id to prioritize recent conversation context
+            # This ensures that recent messages in the same conversation are included even if semantic similarity is lower
+            threshold = 0.3 if conversation_id else 0.5  # Lower threshold for conversation-scoped queries
             similar_results = find_similar_messages_enhanced(
                 db,
                 query,
                 limit=limit,
+                threshold=threshold,
                 user_id=user_id,
                 language=language,
                 use_chunks=use_chunks,
@@ -478,15 +482,18 @@ def build_prompt_with_context(
     """
     prompt_parts = []
     
-    if context:
+    if context and context.strip() and context != "No relevant conversation history found.":
         prompt_parts.append(context)
         prompt_parts.append("\n---\n")
+        prompt_parts.append("Based on the conversation history above, respond to the following message:")
+    else:
+        prompt_parts.append("You are having a conversation. Respond to the following message:")
     
     if user_style:
         prompt_parts.append(f"User communication style: {user_style}\n")
     
-    prompt_parts.append(f"Current message to respond to: {current_message}\n")
-    prompt_parts.append("Generate a personalized response that matches the user's style and context.")
+    prompt_parts.append(f"Current message: {current_message}\n")
+    prompt_parts.append("Generate a personalized response that matches the user's style and uses the conversation context when relevant.")
     
     return "\n".join(prompt_parts)
 
