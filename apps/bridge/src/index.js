@@ -9,6 +9,7 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  getAggregateVotesInPollMessage,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -120,6 +121,16 @@ async function startBridge() {
       version,
       browser: ['Minimee', 'Chrome', '1.0.0'],
       getMessage: async (key) => {
+        // Try to get message from cache or return placeholder
+        // This is needed for decrypting poll votes
+        if (sock && sock.store) {
+          try {
+            const msg = await sock.loadMessage(key.remoteJid, key.id);
+            if (msg) return msg;
+          } catch (error) {
+            // Message not in cache, that's ok
+          }
+        }
         return {
           conversation: 'Message not available',
         };
@@ -211,15 +222,60 @@ async function startBridge() {
       }
     });
 
+    // Listen for all events to catch poll votes
     sock.ev.on('messages.upsert', async (m) => {
       try {
         const { messages, type } = m;
+        
+        // Log all upsert events for debugging
+        logger.info({
+          type,
+          messagesCount: messages.length,
+          firstMessage: messages[0] ? {
+            hasPollUpdate: !!messages[0].message?.pollUpdateMessage,
+            hasPollCreation: !!messages[0].message?.pollCreationMessage,
+            remoteJid: messages[0].key?.remoteJid,
+          } : null,
+        }, '=== messages.upsert event received ===');
         
         if (type !== 'notify') {
           return;
         }
 
         for (const msg of messages) {
+          // Check for poll vote updates in upsert
+          if (msg.message?.pollUpdateMessage) {
+            logger.info({
+              pollUpdate: JSON.stringify(msg.message.pollUpdateMessage),
+              key: JSON.stringify(msg.key),
+            }, 'Poll vote detected in messages.upsert!');
+            
+            const pollUpdate = msg.message.pollUpdateMessage;
+            const pollMessageKey = pollUpdate.pollCreationMessageKey;
+            
+            if (pollMessageKey?.id) {
+              const isGroup = pollMessageKey.remoteJid?.includes('@g.us');
+              if (isGroup) {
+                try {
+                  const groupMetadata = await sock.groupMetadata(pollMessageKey.remoteJid);
+                  if (groupMetadata.subject === 'Minimee TEAM') {
+                    // Get selected options
+                    const selectedOptions = pollUpdate.vote?.selectedOptionIds || pollUpdate.vote?.selectedOptions || pollUpdate.pollUpdates?.[0]?.vote?.selectedOptionIds || [];
+                    if (selectedOptions.length > 0) {
+                      logger.info({
+                        selectedOptions,
+                        pollMessageId: pollMessageKey.id,
+                      }, 'Processing poll vote from messages.upsert');
+                      await processPollVote(sock, pollMessageKey, selectedOptions, msg.key);
+                      continue; // Don't process as regular message
+                    }
+                  }
+                } catch (error) {
+                  logger.warn({ error: error.message }, 'Error processing poll vote from messages.upsert');
+                }
+              }
+            }
+          }
           // Skip status broadcasts
           if (msg.key.remoteJid === 'status@broadcast') {
             continue;
@@ -236,6 +292,40 @@ async function startBridge() {
           // Skip messages with [🤖 Minimee] prefix to avoid loops
           if (messageText.startsWith('[🤖 Minimee]')) {
             continue;
+          }
+          
+          // Check for poll vote messages (they arrive in upsert too)
+          if (msg.message?.pollUpdateMessage) {
+            logger.info({
+              pollUpdate: JSON.stringify(msg.message.pollUpdateMessage),
+              key: JSON.stringify(msg.key),
+            }, 'Poll vote received via messages.upsert - debugging structure');
+            
+            const pollUpdate = msg.message.pollUpdateMessage;
+            const pollMessageKey = pollUpdate.pollCreationMessageKey;
+            
+            if (pollMessageKey?.id) {
+              const isGroup = pollMessageKey.remoteJid?.includes('@g.us');
+              if (isGroup) {
+                try {
+                  const groupMetadata = await sock.groupMetadata(pollMessageKey.remoteJid);
+                  if (groupMetadata.subject === 'Minimee TEAM') {
+                    // Get selected options
+                    const selectedOptions = pollUpdate.vote?.selectedOptionIds || pollUpdate.vote?.selectedOptions || pollUpdate.pollUpdates?.[0]?.vote?.selectedOptionIds || [];
+                    if (selectedOptions.length > 0) {
+                      logger.info({
+                        selectedOptions,
+                        pollMessageId: pollMessageKey.id,
+                      }, 'Processing poll vote from messages.upsert');
+                      await processPollVote(sock, pollMessageKey, selectedOptions, msg.key);
+                      continue; // Don't process as regular message
+                    }
+                  }
+                } catch (error) {
+                  logger.warn({ error: error.message }, 'Error processing poll vote from messages.upsert');
+                }
+              }
+            }
           }
           
           // Handle group messages (Minimee TEAM)
@@ -519,6 +609,10 @@ async function startBridge() {
 
     // Handle message sending errors and poll updates
     sock.ev.on('messages.update', async (updates) => {
+      logger.info({
+        updatesCount: updates.length,
+      }, '=== messages.update event triggered ===');
+      
       for (const update of updates) {
         // Handle message sending errors
         if (update.update?.status === 'ERROR') {
@@ -526,148 +620,237 @@ async function startBridge() {
             messageId: update.key.id,
             status: update.update.status,
           }, 'Message sending failed');
+          continue;
         }
         
-        // Handle poll vote updates
+        // Log ALL update types for debugging (temporarily)
+        // This is critical to see what events actually arrive
+        logger.info({
+          hasUpdate: !!update.update,
+          updateKeys: update.update ? Object.keys(update.update) : [],
+          updateType: update.update ? Object.keys(update.update)[0] : 'none',
+          update: JSON.stringify(update.update).substring(0, 2000),
+          key: JSON.stringify(update.key),
+          remoteJid: update.key?.remoteJid,
+          messageId: update.key?.id,
+        }, '=== Messages.update event received (DEBUG) ===');
+        
+        // Try to get poll votes using Baileys helper function
+        // Poll updates might come as regular message updates
+        try {
+          if (update.key?.remoteJid?.includes('@g.us') && update.key?.id) {
+            const groupMetadata = await sock.groupMetadata(update.key.remoteJid);
+            if (groupMetadata.subject === 'Minimee TEAM') {
+              // Try to load the message and check if it's a poll
+              const msg = await sock.loadMessage(update.key.remoteJid, update.key.id);
+              if (msg?.message?.pollCreationMessage) {
+                // This is a poll message, get aggregate votes
+                const pollUpdate = update.update?.pollUpdateMessage ? update.update.pollUpdateMessage : null;
+                const votes = await getAggregateVotesInPollMessage({
+                  message: msg.message,
+                  pollUpdates: pollUpdate ? [pollUpdate] : [],
+                });
+                
+                logger.info({
+                  pollMessageId: update.key.id,
+                  votes: JSON.stringify(votes),
+                  update: JSON.stringify(update.update).substring(0, 500),
+                }, 'Poll votes retrieved via getAggregateVotesInPollMessage');
+                
+                // Process the latest vote
+                if (votes && votes.votes && votes.votes.length > 0) {
+                  // Get the most recent vote (last in array)
+                  const latestVote = votes.votes[votes.votes.length - 1];
+                  const selectedOptions = latestVote.selectedOptionIds || [];
+                  
+                  if (selectedOptions.length > 0) {
+                    const pollMessageKey = { id: update.key.id, remoteJid: update.key.remoteJid };
+                    await processPollVote(sock, pollMessageKey, selectedOptions, update.key);
+                    continue;
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          // Not a poll or error loading - continue to check other update types
+          logger.debug({ error: error.message }, 'Error checking poll votes');
+        }
+        
+        // Handle poll vote updates (alternative method)
         if (update.update?.pollUpdateMessage) {
           const pollUpdate = update.update.pollUpdateMessage;
-          const pollMessageKey = pollUpdate.pollCreationMessageKey;
           
-          if (!pollMessageKey || !pollMessageKey.id) {
+          // Log the full structure for debugging
+          logger.info({
+            pollUpdate: JSON.stringify(pollUpdate),
+            updateKey: JSON.stringify(update.key),
+          }, 'Poll update message received - debugging structure');
+          
+          // In Baileys, poll updates come with pollUpdates array
+          // Each pollUpdate contains votes with selectedOptionIds
+          const pollUpdates = pollUpdate.pollUpdates || [];
+          
+          if (pollUpdates.length === 0) {
+            // Try alternative structure: direct vote on pollCreationMessageKey
+            const pollMessageKey = pollUpdate.pollCreationMessageKey;
+            
+            if (!pollMessageKey || !pollMessageKey.id) {
+              logger.warn('Poll update has no pollUpdates array and no pollCreationMessageKey');
+              continue;
+            }
+            
+            // Process single poll update
+            const selectedOptions = pollUpdate.vote?.selectedOptionIds || pollUpdate.vote?.selectedOptions || [];
+            await processPollVote(sock, pollMessageKey, selectedOptions, update.key);
             continue;
           }
           
-          try {
-            // Check if this poll is from Minimee TEAM group
-            const isGroup = pollMessageKey.remoteJid?.includes('@g.us');
-            if (!isGroup) {
+          // Process multiple poll updates (each vote is separate)
+          for (const pollVoteUpdate of pollUpdates) {
+            const pollMessageKey = pollVoteUpdate.pollCreationMessageKey || pollUpdate.pollCreationMessageKey;
+            if (!pollMessageKey || !pollMessageKey.id) {
               continue;
             }
             
-            // Get group metadata to verify it's Minimee TEAM
-            try {
-              const groupMetadata = await sock.groupMetadata(pollMessageKey.remoteJid);
-              if (groupMetadata.subject !== 'Minimee TEAM') {
-                continue;
-              }
-            } catch (error) {
-              logger.warn({ error: error.message }, 'Could not get group metadata for poll update');
-              continue;
-            }
-            
-            // Get selected vote options
-            const selectedOptions = pollUpdate.vote?.selectedOptions || pollUpdate.vote?.selectedOptionIds || [];
-            if (selectedOptions.length === 0) {
-              logger.warn('Poll vote update has no selected options');
-              continue;
-            }
-            
-            // Map poll option index (0, 1, 2, 3) to approval choice (A, B, C, NO)
-            // Poll values are: ["A) Option A", "B) Option B", "C) Option C", "No) Ne pas répondre"]
-            // Index 0 = A (option_index 0)
-            // Index 1 = B (option_index 1)
-            // Index 2 = C (option_index 2)
-            // Index 3 = NO (action 'no')
-            const selectedIndex = selectedOptions[0]; // Single choice poll, take first vote
-            
-            let approvalChoice = null;
-            if (selectedIndex === 0) {
-              approvalChoice = 0; // A
-            } else if (selectedIndex === 1) {
-              approvalChoice = 1; // B
-            } else if (selectedIndex === 2) {
-              approvalChoice = 2; // C
-            } else if (selectedIndex === 3) {
-              approvalChoice = 'no'; // NO
-            } else {
-              logger.warn({ selectedIndex }, 'Invalid poll vote index');
-              continue;
-            }
-            
-            logger.info({
-              selectedIndex,
-              approvalChoice,
-              pollMessageId: pollMessageKey.id,
-              sender: update.key.participant || update.key.remoteJid,
-            }, 'Poll vote received in Minimee TEAM group');
-            
-            // Get pending approval info from backend using the poll message ID as group_message_id
-            const pendingApproval = await getPendingApprovalByGroupMessageId(pollMessageKey.id);
-            
-            if (!pendingApproval) {
-              logger.warn({
-                choice: approvalChoice,
-                pollMessageId: pollMessageKey.id,
-              }, 'Poll vote detected but pending approval not found');
-              continue;
-            }
-            
-            const messageId = pendingApproval?.message_id || null;
-            const conversationId = pendingApproval?.conversation_id || null;
-            // Determine if this is an email draft (message_id is null but conversation_id exists)
-            const approvalType = (conversationId && messageId === null) ? 'email_draft' : 'whatsapp_message';
-            const emailThreadId = approvalType === 'email_draft' ? conversationId : null;
-            
-            // For email drafts, we need conversation_id (thread_id), not message_id
-            // For WhatsApp, we need message_id
-            if (approvalType === 'whatsapp_message' && !messageId) {
-              logger.warn({
-                choice: approvalChoice,
-                pollMessageId: pollMessageKey.id,
-                approvalType,
-              }, 'Cannot find message_id for WhatsApp approval response');
-              continue;
-            }
-            
-            if (approvalType === 'email_draft' && !emailThreadId) {
-              logger.warn({
-                choice: approvalChoice,
-                pollMessageId: pollMessageKey.id,
-                approvalType,
-              }, 'Cannot find email_thread_id for email draft approval response');
-              continue;
-            }
-            
-            logger.info({
-              messageId,
-              emailThreadId,
-              conversationId,
-              choice: approvalChoice,
-              selectedIndex,
-              pollMessageId: pollMessageKey.id,
-              approvalType,
-            }, 'Processing poll vote approval response');
-            
-            // Determine action and option_index
-            let action = 'yes';
-            let optionIndex = null;
-            
-            if (approvalChoice === 'no') {
-              action = 'no';
-            } else if (typeof approvalChoice === 'number') {
-              optionIndex = approvalChoice;
-            }
-            
-            // Call backend to process approval
-            const result = await sendApprovalResponse(messageId, optionIndex, action, emailThreadId, approvalType);
-            
-            logger.info({
-              messageId,
-              emailThreadId,
-              choice: approvalChoice,
-              result: result.status,
-              approvalType,
-            }, 'Poll vote approval response sent to backend');
-            
-          } catch (error) {
-            logger.error({
-              error: error.message,
-              stack: error.stack,
-            }, 'Error processing poll vote update');
+            const selectedOptions = pollVoteUpdate.vote?.selectedOptionIds || pollVoteUpdate.vote?.selectedOptions || [];
+            await processPollVote(sock, pollMessageKey, selectedOptions, update.key);
           }
         }
       }
     });
+
+    // Helper function to process a poll vote
+    async function processPollVote(sock, pollMessageKey, selectedOptions, updateKey) {
+      try {
+        // Check if this poll is from Minimee TEAM group
+        const isGroup = pollMessageKey.remoteJid?.includes('@g.us');
+        if (!isGroup) {
+          return;
+        }
+        
+        // Get group metadata to verify it's Minimee TEAM
+        try {
+          const groupMetadata = await sock.groupMetadata(pollMessageKey.remoteJid);
+          if (groupMetadata.subject !== 'Minimee TEAM') {
+            return;
+          }
+        } catch (error) {
+          logger.warn({ error: error.message }, 'Could not get group metadata for poll update');
+          return;
+        }
+        
+        if (selectedOptions.length === 0) {
+          logger.warn({
+            pollMessageKey: pollMessageKey.id,
+          }, 'Poll vote update has no selected options');
+          return;
+        }
+            
+        // Map poll option index (0, 1, 2, 3) to approval choice (A, B, C, NO)
+        // Poll values are: ["A) Option A", "B) Option B", "C) Option C", "No) Ne pas répondre"]
+        // Index 0 = A (option_index 0)
+        // Index 1 = B (option_index 1)
+        // Index 2 = C (option_index 2)
+        // Index 3 = NO (action 'no')
+        const selectedIndex = selectedOptions[0]; // Single choice poll, take first vote
+        
+        let approvalChoice = null;
+        if (selectedIndex === 0) {
+          approvalChoice = 0; // A
+        } else if (selectedIndex === 1) {
+          approvalChoice = 1; // B
+        } else if (selectedIndex === 2) {
+          approvalChoice = 2; // C
+        } else if (selectedIndex === 3) {
+          approvalChoice = 'no'; // NO
+        } else {
+          logger.warn({ selectedIndex }, 'Invalid poll vote index');
+          return;
+        }
+        
+        logger.info({
+          selectedIndex,
+          approvalChoice,
+          pollMessageId: pollMessageKey.id,
+          sender: updateKey.participant || updateKey.remoteJid,
+        }, 'Poll vote received in Minimee TEAM group');
+        
+        // Get pending approval info from backend using the poll message ID as group_message_id
+        const pendingApproval = await getPendingApprovalByGroupMessageId(pollMessageKey.id);
+        
+        if (!pendingApproval) {
+          logger.warn({
+            choice: approvalChoice,
+            pollMessageId: pollMessageKey.id,
+          }, 'Poll vote detected but pending approval not found');
+          return;
+        }
+        
+        const messageId = pendingApproval?.message_id || null;
+        const conversationId = pendingApproval?.conversation_id || null;
+        // Determine if this is an email draft (message_id is null but conversation_id exists)
+        const approvalType = (conversationId && messageId === null) ? 'email_draft' : 'whatsapp_message';
+        const emailThreadId = approvalType === 'email_draft' ? conversationId : null;
+        
+        // For email drafts, we need conversation_id (thread_id), not message_id
+        // For WhatsApp, we need message_id
+        if (approvalType === 'whatsapp_message' && !messageId) {
+          logger.warn({
+            choice: approvalChoice,
+            pollMessageId: pollMessageKey.id,
+            approvalType,
+          }, 'Cannot find message_id for WhatsApp approval response');
+          return;
+        }
+        
+        if (approvalType === 'email_draft' && !emailThreadId) {
+          logger.warn({
+            choice: approvalChoice,
+            pollMessageId: pollMessageKey.id,
+            approvalType,
+          }, 'Cannot find email_thread_id for email draft approval response');
+          return;
+        }
+        
+        logger.info({
+          messageId,
+          emailThreadId,
+          conversationId,
+          choice: approvalChoice,
+          selectedIndex,
+          pollMessageId: pollMessageKey.id,
+          approvalType,
+        }, 'Processing poll vote approval response');
+        
+        // Determine action and option_index
+        let action = 'yes';
+        let optionIndex = null;
+        
+        if (approvalChoice === 'no') {
+          action = 'no';
+        } else if (typeof approvalChoice === 'number') {
+          optionIndex = approvalChoice;
+        }
+        
+        // Call backend to process approval
+        const result = await sendApprovalResponse(messageId, optionIndex, action, emailThreadId, approvalType);
+        
+        logger.info({
+          messageId,
+          emailThreadId,
+          choice: approvalChoice,
+          result: result.status,
+          approvalType,
+        }, 'Poll vote approval response sent to backend');
+        
+      } catch (error) {
+        logger.error({
+          error: error.message,
+          stack: error.stack,
+        }, 'Error processing poll vote update');
+      }
+    }
 
     return sock;
   } catch (error) {

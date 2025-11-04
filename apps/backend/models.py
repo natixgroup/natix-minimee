@@ -26,6 +26,7 @@ class User(Base):
     oauth_tokens = relationship("OAuthToken", back_populates="user")
     settings = relationship("Setting", back_populates="user")
     policies = relationship("Policy", back_populates="user")
+    whatsapp_integrations = relationship("WhatsAppIntegration", back_populates="user")
 
 
 class Message(Base):
@@ -223,4 +224,26 @@ class PendingApproval(Base):
     # Relationships
     message = relationship("Message", backref="pending_approvals")
     user = relationship("User", backref="pending_approvals")
+
+
+class WhatsAppIntegration(Base):
+    __tablename__ = "whatsapp_integrations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    integration_type = Column(String, nullable=False, index=True)  # 'user' or 'minimee'
+    phone_number = Column(String, nullable=True)
+    display_name = Column(String, nullable=True)
+    status = Column(String, nullable=False, default='disconnected', index=True)  # connected/disconnected/pending
+    auth_info_path = Column(String, nullable=True)  # Path to auth_info directory
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    user = relationship("User", back_populates="whatsapp_integrations")
+    
+    # Unique constraint: one integration per type per user
+    __table_args__ = (
+        sa.UniqueConstraint('user_id', 'integration_type', name='uq_user_integration_type'),
+    )
 
