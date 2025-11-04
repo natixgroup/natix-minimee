@@ -12,6 +12,10 @@ const AGENT_PHONES = process.env.AGENT_PHONES
   ? process.env.AGENT_PHONES.split(',').map(p => p.trim()).filter(Boolean)
   : [];
 
+// Cache for poll messages: pollMessageId -> pollMessage
+// This allows us to decrypt votes even if message is not in Baileys cache
+const pollMessageCache = new Map();
+
 /**
  * Check if group exists
  */
@@ -97,8 +101,10 @@ export async function addParticipantsToGroup(sock, groupId, participants) {
 
 /**
  * Initialize Minimee TEAM group on connection
+ * @param {Object} sock - Baileys socket
+ * @param {string} userPhoneJid - Optional: User phone JID to add to group (for Minimee account)
  */
-export async function initializeMinimeeTeam(sock) {
+export async function initializeMinimeeTeam(sock, userPhoneJid = null) {
   try {
     logger.info('Initializing Minimee TEAM group...');
     
@@ -108,29 +114,38 @@ export async function initializeMinimeeTeam(sock) {
       group = await createMinimeeTeamGroup(sock);
     }
     
-    // If there are agent phones configured and group exists, ensure they're added
-    if (AGENT_PHONES.length > 0 && group) {
-      // Get current participants
-      const groupInfo = await sock.groupMetadata(group.id);
-      const currentParticipantIds = groupInfo.participants.map(p => {
-        if (typeof p === 'string') return p;
-        if (typeof p === 'object' && p.id) return p.id;
-        return String(p);
-      });
-      
-      // Find missing participants
+    // Get current participants
+    const groupInfo = await sock.groupMetadata(group.id);
+    const currentParticipantIds = groupInfo.participants.map(p => {
+      if (typeof p === 'string') return p;
+      if (typeof p === 'object' && p.id) return p.id;
+      return String(p);
+    });
+    
+    const participantsToAdd = [];
+    
+    // Add User phone if provided (for Minimee account initialization)
+    if (userPhoneJid && !currentParticipantIds.includes(userPhoneJid)) {
+      participantsToAdd.push(userPhoneJid);
+      logger.info(`Adding User (${userPhoneJid}) to Minimee TEAM group`);
+    }
+    
+    // Add agent phones if configured
+    if (AGENT_PHONES.length > 0) {
       const missingParticipants = AGENT_PHONES
         .map(phone => {
           const cleaned = phone.replace(/[^0-9]/g, '');
           return `${cleaned}@s.whatsapp.net`;
         })
-        .filter(jid => !currentParticipantIds.includes(jid));
+        .filter(jid => !currentParticipantIds.includes(jid) && !participantsToAdd.includes(jid));
       
-      if (missingParticipants.length > 0) {
-        await addParticipantsToGroup(sock, group.id, missingParticipants);
-      } else {
-        logger.info('All agents already in group');
-      }
+      participantsToAdd.push(...missingParticipants);
+    }
+    
+    if (participantsToAdd.length > 0) {
+      await addParticipantsToGroup(sock, group.id, participantsToAdd);
+    } else {
+      logger.info('All required participants already in group');
     }
     
     logger.info(`Minimee TEAM group ready: ${group.id}`);
@@ -143,7 +158,8 @@ export async function initializeMinimeeTeam(sock) {
 
 /**
  * Send approval request message to Minimee TEAM group
- * Uses poll format (which works perfectly) instead of buttons
+ * Note: Cannot use polls in LID groups (votes can't be decrypted)
+ * Using interactive buttons instead
  */
 export async function sendApprovalMessageToGroup(sock, approvalData) {
   try {
@@ -157,7 +173,71 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
     
     const groupId = group.id;
     
-    // Use poll format for multi-choice approval requests
+    // Check if group uses LID (Lightweight ID) - if so, use buttons instead of polls
+    // LID groups are identified by participants containing "@lid"
+    let isLidGroup = false;
+    try {
+      const groupMetadata = await sock.groupMetadata(groupId);
+      if (groupMetadata.participants && groupMetadata.participants.length > 0) {
+        // Check if any participant uses LID format
+        isLidGroup = groupMetadata.participants.some(p => {
+          const participantId = typeof p === 'string' ? p : p.id || String(p);
+          return participantId.includes('@lid');
+        });
+      }
+    } catch (e) {
+      logger.debug({ error: e.message }, 'Could not check if group is LID');
+    }
+    
+    // Use buttons for LID groups (poll votes can't be decrypted)
+    if (isLidGroup) {
+      try {
+        const buttons = [
+          { buttonId: `approve_${approval_id}_A`, buttonText: { displayText: `A) ${options.A?.substring(0, 20) || 'Option A'}` }, type: 1 },
+          { buttonId: `approve_${approval_id}_B`, buttonText: { displayText: `B) ${options.B?.substring(0, 20) || 'Option B'}` }, type: 1 },
+          { buttonId: `approve_${approval_id}_C`, buttonText: { displayText: `C) ${options.C?.substring(0, 20) || 'Option C'}` }, type: 1 },
+          { buttonId: `approve_${approval_id}_NO`, buttonText: { displayText: 'No) Ne pas répondre' }, type: 1 },
+        ];
+        
+        const buttonMessage = {
+          text: message_text,
+          buttons: buttons,
+          headerType: 1,
+        };
+        
+        const sent = await sock.sendMessage(groupId, buttonMessage);
+        const group_message_id = sent.key.id;
+        
+        logger.info({
+          message_id,
+          approval_id,
+          group_message_id,
+          method: 'buttons',
+          reason: 'LID group - polls not supported',
+        }, 'Approval request sent with buttons (LID group)');
+        
+        return { group_message_id, method: 'buttons', approval_id };
+      } catch (buttonError) {
+        logger.warn({ 
+          error: buttonError.message,
+          stack: buttonError.stack 
+        }, 'Button message failed, falling back to text');
+        
+        const sent = await sock.sendMessage(groupId, { text: message_text });
+        const group_message_id = sent.key.id;
+        
+        logger.info({
+          message_id,
+          approval_id,
+          group_message_id,
+          method: 'text',
+        }, 'Approval request sent as text (fallback)');
+        
+        return { group_message_id, method: 'text', approval_id };
+      }
+    }
+    
+    // Use poll format for non-LID groups
     try {
       // Build poll values from options A, B, C
       // Note: We'll add "No) Ne pas répondre" as a 4th option
@@ -182,13 +262,64 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
       const sent = await sock.sendMessage(groupId, pollMessage);
       const group_message_id = sent.key.id;
       
+      // Store the poll message structure for later vote decryption
+      // sent.message might not contain the full structure, so we construct it properly
+      // The structure needed for getAggregateVotesInPollMessage is:
+      // { message: { pollCreationMessage: { name, options: [{ optionName }], selectableOptionsCount } } }
+      const fullPollMessage = {
+        message: {
+          pollCreationMessage: {
+            name: message_text,
+            options: pollValues.map((val) => ({ 
+              optionName: val 
+            })),
+            selectableOptionsCount: 1,
+          }
+        },
+        key: sent.key,
+      };
+      pollMessageCache.set(group_message_id, fullPollMessage);
+      
+      logger.info({
+        pollMessageId: group_message_id,
+        hasPollCreation: !!fullPollMessage.message.pollCreationMessage,
+        optionsCount: fullPollMessage.message.pollCreationMessage.options.length,
+      }, 'Poll message stored in cache for vote decryption');
+      
+      // Also try to load from store after a short delay (async, don't wait)
+      // The store might have additional metadata needed for decryption
+      setTimeout(async () => {
+        try {
+          if (sock.store && typeof sock.store.loadMessage === 'function') {
+            const storedMessage = await sock.store.loadMessage(groupId, group_message_id);
+            if (storedMessage && storedMessage.message && storedMessage.message.pollCreationMessage) {
+              // Use the stored message if it has the pollCreationMessage
+              pollMessageCache.set(group_message_id, storedMessage);
+              logger.info({
+                pollMessageId: group_message_id,
+              }, 'Poll message loaded from store and cached (replacing constructed version)');
+            }
+          }
+        } catch (error) {
+          // Store might not have it yet, that's ok - we have the constructed version
+          logger.debug({ error: error.message }, 'Could not load poll message from store yet');
+        }
+      }, 2000);
+      
+      // Clean old entries (keep only last 100 polls)
+      if (pollMessageCache.size > 100) {
+        const firstKey = pollMessageCache.keys().next().value;
+        pollMessageCache.delete(firstKey);
+      }
+      
       logger.info({
         message_id,
         approval_id,
         group_message_id,
         method: 'poll',
         pollValues: pollValues,
-      }, 'Approval request sent with poll');
+        cached: true,
+      }, 'Approval request sent with poll (cached)');
       
       return { group_message_id, method: 'poll', approval_id };
     } catch (pollError) {
@@ -214,5 +345,12 @@ export async function sendApprovalMessageToGroup(sock, approvalData) {
     logger.error({ error: error.message, message_id, approval_id }, 'Error sending approval message to group');
     throw error;
   }
+}
+
+/**
+ * Get poll message from cache by message ID
+ */
+export function getPollMessageFromCache(pollMessageId) {
+  return pollMessageCache.get(pollMessageId) || null;
 }
 

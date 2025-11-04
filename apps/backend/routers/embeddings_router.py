@@ -98,45 +98,16 @@ async def get_embeddings(
     - **page**: Page number (starts at 1)
     - **limit**: Items per page (max 500)
     """
-    # Base query with LEFT JOIN to messages to get source if not in metadata
-    # Use joinedload to eagerly load the message relationship
-    from sqlalchemy.orm import joinedload
-    query = db.query(Embedding).options(joinedload(Embedding.message))
-    
-    # Always join with Message for date filtering
-    query = query.outerjoin(Message, Embedding.message_id == Message.id)
-    
-    # Apply source filter
-    if source:
-        # Check both metadata->>'source' (PostgreSQL JSONB) and message.source via JOIN
-        # Use PostgreSQL JSONB operator ->> to extract 'source' from metadata
-        from sqlalchemy import text as sql_text
-        
-        # Filter by checking metadata->>'source' OR message.source
-        query = query.filter(
-            or_(
-                Embedding.meta_data['source'].astext == source,  # JSONB operator
-                Message.source == source
-            )
-        )
-    
-    # Apply message date filters (filter by Message.timestamp)
-    if message_start_date:
-        query = query.filter(Message.timestamp >= message_start_date)
-    if message_end_date:
-        query = query.filter(Message.timestamp <= message_end_date)
-    
-    # Apply embedding date filters (filter by Embedding.created_at)
-    if embedding_start_date:
-        query = query.filter(Embedding.created_at >= embedding_start_date)
-    if embedding_end_date:
-        query = query.filter(Embedding.created_at <= embedding_end_date)
-    
-    # Apply text search filter
-    if search:
-        query = query.filter(
-            Embedding.text.ilike(f"%{search}%")
-        )
+    # Use shared query builder
+    query = _build_embedding_query(
+        db=db,
+        source=source,
+        search=search,
+        message_start_date=message_start_date,
+        message_end_date=message_end_date,
+        embedding_start_date=embedding_start_date,
+        embedding_end_date=embedding_end_date
+    )
     
     # Get total count before pagination (need to reset query)
     total_query = query
@@ -207,4 +178,124 @@ async def get_embeddings(
         limit=limit,
         total_pages=total_pages
     )
+
+
+def _build_embedding_query(
+    db: Session,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    message_start_date: Optional[datetime] = None,
+    message_end_date: Optional[datetime] = None,
+    embedding_start_date: Optional[datetime] = None,
+    embedding_end_date: Optional[datetime] = None
+):
+    """
+    Build embedding query with filters (used by both GET and DELETE endpoints)
+    """
+    from sqlalchemy.orm import joinedload
+    from sqlalchemy import or_
+    
+    query = db.query(Embedding).options(joinedload(Embedding.message))
+    query = query.outerjoin(Message, Embedding.message_id == Message.id)
+    
+    # Apply source filter
+    if source:
+        query = query.filter(
+            or_(
+                Embedding.meta_data['source'].astext == source,
+                Message.source == source
+            )
+        )
+    
+    # Apply message date filters
+    if message_start_date:
+        query = query.filter(Message.timestamp >= message_start_date)
+    if message_end_date:
+        query = query.filter(Message.timestamp <= message_end_date)
+    
+    # Apply embedding date filters
+    if embedding_start_date:
+        query = query.filter(Embedding.created_at >= embedding_start_date)
+    if embedding_end_date:
+        query = query.filter(Embedding.created_at <= embedding_end_date)
+    
+    # Apply text search filter
+    if search:
+        query = query.filter(
+            Embedding.text.ilike(f"%{search}%")
+        )
+    
+    return query
+
+
+@router.delete("")
+async def delete_embeddings(
+    source: Optional[str] = Query(None, description="Filter by source: whatsapp, gmail, dashboard, or empty for all"),
+    search: Optional[str] = Query(None, description="Search text in embedding content"),
+    message_start_date: Optional[datetime] = Query(None, description="Filter by message timestamp (start date)"),
+    message_end_date: Optional[datetime] = Query(None, description="Filter by message timestamp (end date)"),
+    embedding_start_date: Optional[datetime] = Query(None, description="Filter by embedding created_at (start date)"),
+    embedding_end_date: Optional[datetime] = Query(None, description="Filter by embedding created_at (end date)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete embeddings matching the specified filters
+    
+    Uses the same filters as GET /embeddings to ensure consistency.
+    Returns count of deleted embeddings.
+    """
+    from services.logs_service import log_to_db
+    
+    try:
+        # Build query with same filters
+        query = _build_embedding_query(
+            db=db,
+            source=source,
+            search=search,
+            message_start_date=message_start_date,
+            message_end_date=message_end_date,
+            embedding_start_date=embedding_start_date,
+            embedding_end_date=embedding_end_date
+        )
+        
+        # Count before deletion
+        count = query.count()
+        
+        if count == 0:
+            return {
+                "deleted": 0,
+                "message": "No embeddings found matching the filters"
+            }
+        
+        # Delete embeddings
+        deleted_count = query.delete(synchronize_session=False)
+        db.commit()
+        
+        log_to_db(
+            db,
+            "INFO",
+            f"Deleted {deleted_count} embeddings",
+            service="embeddings",
+            metadata={
+                "deleted_count": deleted_count,
+                "filters": {
+                    "source": source,
+                    "search": search,
+                    "message_start_date": message_start_date.isoformat() if message_start_date else None,
+                    "message_end_date": message_end_date.isoformat() if message_end_date else None,
+                    "embedding_start_date": embedding_start_date.isoformat() if embedding_start_date else None,
+                    "embedding_end_date": embedding_end_date.isoformat() if embedding_end_date else None,
+                }
+            }
+        )
+        
+        return {
+            "deleted": deleted_count,
+            "message": f"Successfully deleted {deleted_count} embedding(s)"
+        }
+    
+    except Exception as e:
+        db.rollback()
+        log_to_db(db, "ERROR", f"Error deleting embeddings: {str(e)}", service="embeddings")
+        raise HTTPException(status_code=500, detail=f"Error deleting embeddings: {str(e)}")
 

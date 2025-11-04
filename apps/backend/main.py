@@ -22,6 +22,7 @@ from routers import (
     ingest_router,
     gmail_router,
     whatsapp_router,
+    whatsapp_integrations_router,
     minimee_router,
     logs_router,
     metrics_router,
@@ -132,6 +133,7 @@ app.include_router(prompts_router.router)
 app.include_router(ingest_router.router)
 app.include_router(gmail_router.router)
 app.include_router(whatsapp_router.router)
+app.include_router(whatsapp_integrations_router.router)
 app.include_router(minimee_router.router)
 app.include_router(logs_router.router)
 app.include_router(metrics_router.router)

@@ -3,11 +3,12 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { GmailConnect } from "../gmail/GmailConnect";
-import { WhatsAppConnect } from "../whatsapp/WhatsAppConnect";
+import { WhatsAppUserConnect } from "../whatsapp/WhatsAppUserConnect";
+import { WhatsAppMinimeeConnect } from "../whatsapp/WhatsAppMinimeeConnect";
 import { WhatsAppUpload } from "../upload/WhatsAppUpload";
 import { WhatsAppImportHistory } from "./WhatsAppImportHistory";
 import { OpenAIConfig } from "./OpenAIConfig";
-import { Database, MessageSquare, KeyRound, History } from "lucide-react";
+import { Database, MessageSquare, KeyRound, History, Bot } from "lucide-react";
 
 export function IntegrationsSettings() {
   return (
@@ -92,26 +93,49 @@ export function IntegrationsSettings() {
           </div>
         </div>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                WhatsApp Bridge
-              </CardTitle>
-              <div className="flex gap-2">
-                <Badge variant="secondary">Communication</Badge>
-                <Badge variant="outline">Real-time</Badge>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5" />
+                  User WhatsApp Account
+                </CardTitle>
+                <div className="flex gap-2">
+                  <Badge variant="secondary">Communication</Badge>
+                  <Badge variant="outline">Data Source</Badge>
+                </div>
               </div>
-            </div>
-            <CardDescription>
-              Connect WhatsApp to receive messages in real-time and let Minimee respond automatically. 
-              Messages are also indexed as a data source for context.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <WhatsAppConnect />
-          </CardContent>
-        </Card>
+              <CardDescription>
+                Your personal WhatsApp account for receiving messages, importing conversations, and sending approved responses.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <WhatsAppUserConnect />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Bot className="h-5 w-5" />
+                  Minimee WhatsApp Account
+                </CardTitle>
+                <div className="flex gap-2">
+                  <Badge variant="secondary">Communication</Badge>
+                  <Badge variant="outline">Minimee Identity</Badge>
+                </div>
+              </div>
+              <CardDescription>
+                Minimee's dedicated WhatsApp account. Chat with Minimee directly on WhatsApp - messages are synchronized with the dashboard.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <WhatsAppMinimeeConnect />
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* API Keys & Credentials */}

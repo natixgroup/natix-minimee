@@ -105,7 +105,8 @@ async def send_message_via_bridge(
     recipient: str,
     message_text: str,
     source: str,  # 'whatsapp' or 'gmail'
-    db = None
+    db = None,
+    integration_type: str = 'user'  # 'user' or 'minimee' - which account to use
 ) -> Dict[str, Any]:
     """
     Send final message via bridge to recipient
@@ -114,6 +115,7 @@ async def send_message_via_bridge(
         message_text: Message content to send
         source: 'whatsapp' or 'gmail'
         db: Database session (optional)
+        integration_type: 'user' or 'minimee' - which WhatsApp account to use
     Returns:
         Dict with bridge response
     """
@@ -124,7 +126,8 @@ async def send_message_via_bridge(
         should_close = False
     
     try:
-        endpoint = f"{settings.bridge_api_url}/bridge/send-message"
+        # Use the appropriate endpoint based on integration type
+        endpoint = f"{settings.bridge_api_url}/{integration_type}/send"
         
         payload = {
             "recipient": recipient,
@@ -135,11 +138,12 @@ async def send_message_via_bridge(
         log_to_db(
             db,
             "INFO",
-            f"Sending message via bridge to {recipient}",
+            f"Sending message via bridge ({integration_type}) to {recipient}",
             service="bridge_client",
             metadata={
                 "recipient": recipient,
                 "source": source,
+                "integration_type": integration_type,
                 "message_preview": message_text[:100]
             }
         )
@@ -156,11 +160,12 @@ async def send_message_via_bridge(
             log_to_db(
                 db,
                 "INFO",
-                f"Message sent successfully via bridge",
+                f"Message sent successfully via bridge ({integration_type})",
                 service="bridge_client",
                 metadata={
                     "recipient": recipient,
                     "source": source,
+                    "integration_type": integration_type,
                     "sent": result.get("sent", False)
                 }
             )
@@ -197,6 +202,70 @@ async def send_message_via_bridge(
             }
         )
         raise
+    finally:
+        if should_close:
+            db.close()
+
+
+async def send_message_via_user_bridge(
+    recipient: str,
+    message_text: str,
+    source: str = 'whatsapp',
+    db = None
+) -> Dict[str, Any]:
+    """Send message via user WhatsApp account"""
+    return await send_message_via_bridge(recipient, message_text, source, db, integration_type='user')
+
+
+async def send_message_via_minimee_bridge(
+    recipient: str,
+    message_text: str,
+    source: str = 'whatsapp',
+    db = None
+) -> Dict[str, Any]:
+    """Send message via Minimee WhatsApp account"""
+    return await send_message_via_bridge(recipient, message_text, source, db, integration_type='minimee')
+
+
+async def get_user_bridge_status(db = None) -> Dict[str, Any]:
+    """Get status of user WhatsApp bridge"""
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    else:
+        should_close = False
+    
+    try:
+        endpoint = f"{settings.bridge_api_url}/user/status"
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(endpoint)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    finally:
+        if should_close:
+            db.close()
+
+
+async def get_minimee_bridge_status(db = None) -> Dict[str, Any]:
+    """Get status of Minimee WhatsApp bridge"""
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    else:
+        should_close = False
+    
+    try:
+        endpoint = f"{settings.bridge_api_url}/minimee/status"
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(endpoint)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
     finally:
         if should_close:
             db.close()

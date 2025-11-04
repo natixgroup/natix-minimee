@@ -1,6 +1,6 @@
 """
 WhatsApp Bridge Router
-Handles WhatsApp connection status and QR code retrieval
+Handles WhatsApp connection status and QR code retrieval for both user and minimee accounts
 """
 import os
 import subprocess
@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from db.database import get_db
 from services.logs_service import log_structured
+from services.bridge_client import get_user_bridge_status, get_minimee_bridge_status
 from typing import Optional
 
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
@@ -89,16 +90,35 @@ def extract_qr_from_logs(logs: str) -> Optional[str]:
 @router.get("/status")
 async def get_whatsapp_status(db: Session = Depends(get_db)):
     """
-    Get WhatsApp bridge connection status
+    Get WhatsApp bridge connection status (legacy endpoint - returns user status)
     """
     try:
-        status = check_bridge_status()
-        return {
-            "status": "connected" if status.get("connected") else ("pending" if status.get("has_qr") else "disconnected"),
-            "running": status.get("running", False),
-            "connected": status.get("connected", False),
-            "has_qr": status.get("has_qr", False),
-        }
+        status = await get_user_bridge_status(db)
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/user/status")
+async def get_user_whatsapp_status(db: Session = Depends(get_db)):
+    """
+    Get user WhatsApp bridge connection status
+    """
+    try:
+        status = await get_user_bridge_status(db)
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/minimee/status")
+async def get_minimee_whatsapp_status(db: Session = Depends(get_db)):
+    """
+    Get Minimee WhatsApp bridge connection status
+    """
+    try:
+        status = await get_minimee_bridge_status(db)
+        return status
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -106,69 +126,103 @@ async def get_whatsapp_status(db: Session = Depends(get_db)):
 @router.get("/qr")
 async def get_whatsapp_qr(db: Session = Depends(get_db)):
     """
-    Get WhatsApp QR code from bridge logs
-    Returns the QR code section from logs if available
+    Get WhatsApp QR code (legacy endpoint - returns user QR)
+    """
+    return await get_user_whatsapp_qr(db)
+
+
+@router.get("/user/qr")
+async def get_user_whatsapp_qr(db: Session = Depends(get_db)):
+    """
+    Get user WhatsApp QR code from bridge
     """
     try:
-        result = subprocess.run(
-            ["docker", "logs", "minimee-bridge", "--tail", "100"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        import httpx
+        from config import settings
         
-        logs = result.stdout
-        
-        # Check if QR code is present in logs
-        if "qr code generated" in logs.lower() or "scan the qr code" in logs.lower():
-            qr_section = extract_qr_from_logs(logs)
-            if qr_section:
-                return {
-                    "qr_available": True,
-                    "logs": qr_section,
-                }
-            else:
-                # Fallback: return recent logs if QR section extraction fails
-                recent_lines = logs.split('\n')[-50:]  # Last 50 lines
-                return {
-                    "qr_available": True,
-                    "logs": '\n'.join(recent_lines),
-                }
-        else:
-            return {
-                "qr_available": False,
-                "logs": None,
-            }
+        endpoint = f"{settings.bridge_api_url}/user/qr"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(endpoint)
+            response.raise_for_status()
+            return response.json()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get QR code: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user QR code: {str(e)}")
+
+
+@router.get("/minimee/qr")
+async def get_minimee_whatsapp_qr(db: Session = Depends(get_db)):
+    """
+    Get Minimee WhatsApp QR code from bridge
+    """
+    try:
+        import httpx
+        from config import settings
+        
+        endpoint = f"{settings.bridge_api_url}/minimee/qr"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(endpoint)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get Minimee QR code: {str(e)}")
 
 
 @router.post("/restart")
 async def restart_whatsapp_bridge(db: Session = Depends(get_db)):
     """
-    Restart the WhatsApp bridge container to generate a new QR code
+    Restart the WhatsApp bridge (legacy endpoint - restarts user session)
+    """
+    return await restart_user_whatsapp_bridge(db)
+
+
+@router.post("/user/restart")
+async def restart_user_whatsapp_bridge(db: Session = Depends(get_db)):
+    """
+    Restart the user WhatsApp bridge session to generate a new QR code
     """
     try:
-        result = subprocess.run(
-            ["docker", "restart", "minimee-bridge"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        import httpx
+        from config import settings
         
-        if result.returncode == 0:
+        endpoint = f"{settings.bridge_api_url}/user/restart"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(endpoint)
+            response.raise_for_status()
+            result = response.json()
+            
             log_structured(
                 db=db,
                 level="INFO",
-                message="WhatsApp bridge restarted",
+                message="User WhatsApp bridge restarted",
                 service="whatsapp",
             )
-            return {"status": "restarted", "message": "Bridge restarted successfully"}
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to restart bridge: {result.stderr}"
+            return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/minimee/restart")
+async def restart_minimee_whatsapp_bridge(db: Session = Depends(get_db)):
+    """
+    Restart the Minimee WhatsApp bridge session to generate a new QR code
+    """
+    try:
+        import httpx
+        from config import settings
+        
+        endpoint = f"{settings.bridge_api_url}/minimee/restart"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(endpoint)
+            response.raise_for_status()
+            result = response.json()
+            
+            log_structured(
+                db=db,
+                level="INFO",
+                message="Minimee WhatsApp bridge restarted",
+                service="whatsapp",
             )
+            return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -176,29 +230,7 @@ async def restart_whatsapp_bridge(db: Session = Depends(get_db)):
 @router.post("/start")
 async def start_whatsapp_bridge(db: Session = Depends(get_db)):
     """
-    Start the WhatsApp bridge container
+    Start the WhatsApp bridge (legacy endpoint - starts user session)
     """
-    try:
-        result = subprocess.run(
-            ["docker", "start", "minimee-bridge"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        
-        if result.returncode == 0:
-            log_structured(
-                db=db,
-                level="INFO",
-                message="WhatsApp bridge started",
-                service="whatsapp",
-            )
-            return {"status": "started", "message": "Bridge started successfully"}
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to start bridge: {result.stderr}"
-            )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return await restart_user_whatsapp_bridge(db)  # Restart = start if not running
 

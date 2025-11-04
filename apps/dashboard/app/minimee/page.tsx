@@ -19,7 +19,8 @@ interface ModelStatus {
 
 export default function MinimeePage() {
   const userId = 1; // TODO: Get from auth
-  const conversationId = `dashboard-user-${userId}`;
+  // Use fixed conversation_id for dashboard chat with Minimee (syncs with WhatsApp Minimee)
+  const conversationId = `dashboard-minimee-${userId}`;
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [isCheckingModel, setIsCheckingModel] = useState(true);
 

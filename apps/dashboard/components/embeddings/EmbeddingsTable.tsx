@@ -17,7 +17,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { ChevronLeft, ChevronRight, Eye, ChevronDown, ChevronUp, Filter, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, ChevronDown, ChevronUp, Filter, X, Trash2, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { api } from "@/lib/api";
 
 const TRUNCATE_LENGTH = 150;
 
@@ -69,6 +71,8 @@ export function EmbeddingsTable() {
   const [searchDebounce, setSearchDebounce] = useState<NodeJS.Timeout | null>(null);
   const [realTime, setRealTime] = useState<boolean>(false);
   const [filtersExpanded, setFiltersExpanded] = useState<boolean>(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<boolean>(false);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   // Load filters expanded state from localStorage
   useEffect(() => {
@@ -165,7 +169,7 @@ export function EmbeddingsTable() {
     return Array.from(selectedSources)[0];
   }, [selectedSources]);
 
-  const { embeddings, total, totalPages, isLoading, error } = useEmbeddings({
+  const { embeddings, total, totalPages, isLoading, error, refetch } = useEmbeddings({
     source: sourceFilter,
     search: search || undefined,
     message_start_date: messageDateRange.start_date,
@@ -345,7 +349,29 @@ export function EmbeddingsTable() {
       {/* Embeddings Table */}
       <Card>
         <CardHeader>
-          <CardTitle>Embeddings ({total} total)</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Embeddings ({total} total)</CardTitle>
+            {total > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Suppression...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Purger les embeddings filtrés
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="rounded-md border max-h-[600px] overflow-auto">
@@ -542,6 +568,71 @@ export function EmbeddingsTable() {
               )}
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmer la suppression</DialogTitle>
+            <DialogDescription>
+              Vous êtes sur le point de supprimer <strong>{total} embedding(s)</strong> correspondant aux filtres actuels.
+              <br />
+              <br />
+              Cette action est <strong className="text-destructive">irréversible</strong>.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2 justify-end mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteConfirm(false)}
+              disabled={isDeleting}
+            >
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                setIsDeleting(true);
+                try {
+                  const result = await api.deleteEmbeddings({
+                    source: sourceFilter,
+                    search: search || undefined,
+                    message_start_date: messageDateRange.start_date,
+                    message_end_date: messageDateRange.end_date,
+                    embedding_start_date: embeddingDateRange.start_date,
+                    embedding_end_date: embeddingDateRange.end_date,
+                  });
+                  
+                  toast.success(result.message || `${result.deleted} embedding(s) supprimé(s)`);
+                  setShowDeleteConfirm(false);
+                  setPage(1); // Reset to first page
+                  // Refetch embeddings
+                  refetch();
+                } catch (error) {
+                  toast.error(
+                    error instanceof Error ? error.message : "Erreur lors de la suppression"
+                  );
+                } finally {
+                  setIsDeleting(false);
+                }
+              }}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Suppression...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Supprimer {total} embedding(s)
+                </>
+              )}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </>

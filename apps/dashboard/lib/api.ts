@@ -534,14 +534,120 @@ class ApiClient {
   }
 
   async restartWhatsAppBridge() {
+    // Legacy - uses user bridge
+    return this.restartUserWhatsAppBridge();
+  }
+
+  // User WhatsApp methods
+  async getUserWhatsAppStatus() {
     const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
-    const response = await fetch(`${bridgeUrl}/restart`, {
+    const response = await fetch(`${bridgeUrl}/user/status`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      status: data.status,
+      running: true,
+      connected: data.connected,
+      has_qr: data.has_qr,
+    };
+  }
+
+  async getUserWhatsAppQR() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/user/qr`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      qr_available: data.qr_available,
+      logs: data.qr_data || null,
+      qr_data: data.qr_data,
+    };
+  }
+
+  async restartUserWhatsAppBridge() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/user/restart`, {
       method: "POST",
     });
     if (!response.ok) {
       throw new Error(`Bridge API error: ${response.status}`);
     }
     return response.json();
+  }
+
+  // Minimee WhatsApp methods
+  async getMinimeeWhatsAppStatus() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/minimee/status`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      status: data.status,
+      running: true,
+      connected: data.connected,
+      has_qr: data.has_qr,
+    };
+  }
+
+  async getMinimeeWhatsAppQR() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/minimee/qr`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      qr_available: data.qr_available,
+      logs: data.qr_data || null,
+      qr_data: data.qr_data,
+    };
+  }
+
+  async restartMinimeeWhatsAppBridge() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/minimee/restart`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    return response.json();
+  }
+
+  // Get user WhatsApp account info (phone number and account type)
+  async getUserWhatsAppInfo() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/user-info`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      phone: data.phone,
+      account_type: data.account_type || 'standard',
+      is_business: data.is_business || false,
+    };
+  }
+
+  // Get Minimee WhatsApp account info (phone number and account type)
+  async getMinimeeWhatsAppInfo() {
+    const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
+    const response = await fetch(`${bridgeUrl}/minimee/user-info`);
+    if (!response.ok) {
+      throw new Error(`Bridge API error: ${response.status}`);
+    }
+    const data = await response.json();
+    return {
+      phone: data.phone,
+      account_type: data.account_type || 'standard',
+      is_business: data.is_business || false,
+    };
   }
 
   // WhatsApp Import History
@@ -590,7 +696,13 @@ class ApiClient {
   }
 
   // Test WhatsApp message with different formats
-  async testWhatsAppMessage(method: string, recipientPhone: string) {
+  // Messages can be sent from User or Minimee account to either User WhatsApp or Minimee TEAM group
+  async testWhatsAppMessage(
+    method: string,
+    sender: "user" | "minimee",
+    destination: "user" | "group",
+    userPhone?: string
+  ) {
     const bridgeUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3003";
     const response = await fetch(`${bridgeUrl}/bridge/test-message`, {
       method: "POST",
@@ -599,7 +711,9 @@ class ApiClient {
       },
       body: JSON.stringify({
         method,
-        recipient: recipientPhone,
+        sender,
+        destination,
+        userPhone: destination === "user" ? userPhone : undefined,
       }),
     });
 

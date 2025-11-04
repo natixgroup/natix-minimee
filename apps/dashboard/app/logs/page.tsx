@@ -6,14 +6,14 @@ import { useLogs } from "@/lib/hooks/useLogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle, Filter, X, ChevronDown, ChevronUp } from "lucide-react";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";                                                          
+import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle, Filter, X, ChevronDown, ChevronUp } from "lucide-react";                                       
 import { Log } from "@/lib/api";
 
 // Simple Tooltip component for logs
-function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) {
+function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) {                                                                               
   const [show, setShow] = useState(false);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);                                                                         
   const triggerRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
@@ -53,7 +53,7 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
       </div>
       {show && position && (
         <div 
-          className="fixed z-[9999] w-[500px] max-w-[80vw] p-4 bg-popover text-popover-foreground text-sm rounded-md border shadow-lg"
+          className="fixed z-[9999] w-[500px] max-w-[80vw] p-4 bg-popover text-popover-foreground text-sm rounded-md border shadow-lg"                          
           style={{ top: `${position.top}px`, left: `${position.left}px` }}
           onMouseEnter={() => setShow(true)}
           onMouseLeave={() => setShow(false)}
@@ -67,10 +67,10 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
               <span className="text-muted-foreground font-medium">Level:</span>
               <span className="font-medium">{log.level}</span>
               
-              <span className="text-muted-foreground font-medium">Service:</span>
+              <span className="text-muted-foreground font-medium">Service:</span>                                                                               
               <span>{log.service || "N/A"}</span>
               
-              <span className="text-muted-foreground font-medium">Timestamp:</span>
+              <span className="text-muted-foreground font-medium">Timestamp:</span>                                                                             
               <span>{new Date(log.timestamp).toLocaleString("fr-FR", { 
                 year: "numeric",
                 month: "long", 
@@ -88,7 +88,7 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
             {log.metadata && Object.keys(log.metadata).length > 0 && (
               <>
                 <div className="border-t pt-2 mt-2">
-                  <div className="text-xs font-semibold mb-2 text-muted-foreground">
+                  <div className="text-xs font-semibold mb-2 text-muted-foreground">                                                                            
                     Metadata:
                   </div>
                   <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -97,18 +97,18 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
                         ? JSON.stringify(value, null, 2)
                         : String(value);
                       const isLongText = stringValue.length > 200;
-                      const displayValue = isLongText && typeof value !== "object"
+                      const displayValue = isLongText && typeof value !== "object"                                                                              
                         ? stringValue.substring(0, 300) + "..."
                         : stringValue;
                       
                       return (
                         <div key={key} className="border-b pb-2 last:border-0">
-                          <div className="text-muted-foreground font-medium text-xs mb-1">
+                          <div className="text-muted-foreground font-medium text-xs mb-1">                                                                      
                             {key}:
                           </div>
                           <div className="text-xs break-words">
                             {typeof value === "object" ? (
-                              <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">
+                              <pre className="whitespace-pre-wrap text-xs bg-muted p-2 rounded max-h-40 overflow-y-auto">                                       
                                 {displayValue}
                               </pre>
                             ) : (
@@ -150,7 +150,6 @@ const TIME_FILTERS = [
 type TimeFilter = typeof TIME_FILTERS[number]["value"];
 
 const LOG_LEVELS = [
-  { label: "All", value: "all" },
   { label: "ERROR", value: "ERROR" },
   { label: "WARNING", value: "WARNING" },
   { label: "INFO", value: "INFO" },
@@ -158,7 +157,6 @@ const LOG_LEVELS = [
 ] as const;
 
 const SERVICES = [
-  { label: "All Services", value: "all" },
   { label: "API", value: "api" },
   { label: "Frontend", value: "frontend" },
   { label: "Minimee", value: "minimee" },
@@ -169,8 +167,8 @@ const SERVICES = [
 
 export default function LogsPage() {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
-  const [selectedLevel, setSelectedLevel] = useState<string>("all");
-  const [selectedService, setSelectedService] = useState<string>("all");
+  const [selectedLevels, setSelectedLevels] = useState<Set<string>>(new Set());
+  const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(0);
   const [filtersExpanded, setFiltersExpanded] = useState(true);
   const limit = 50;
@@ -214,9 +212,65 @@ export default function LogsPage() {
     };
   }, [timeFilter]);
 
+  // Toggle level selection
+  const toggleLevel = (level: string) => {
+    setSelectedLevels(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(level)) {
+        newSet.delete(level);
+      } else {
+        newSet.add(level);
+      }
+      return newSet;
+    });
+    setPage(0);
+  };
+
+  // Toggle service selection
+  const toggleService = (service: string) => {
+    setSelectedServices(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(service)) {
+        newSet.delete(service);
+      } else {
+        newSet.add(service);
+      }
+      return newSet;
+    });
+    setPage(0);
+  };
+
+  // Select all levels
+  const selectAllLevels = () => {
+    setSelectedLevels(new Set(LOG_LEVELS.map(l => l.value)));
+    setPage(0);
+  };
+
+  // Deselect all levels
+  const deselectAllLevels = () => {
+    setSelectedLevels(new Set());
+    setPage(0);
+  };
+
+  // Select all services
+  const selectAllServices = () => {
+    setSelectedServices(new Set(SERVICES.map(s => s.value)));
+    setPage(0);
+  };
+
+  // Deselect all services
+  const deselectAllServices = () => {
+    setSelectedServices(new Set());
+    setPage(0);
+  };
+
+  // Prepare API params - convert sets to comma-separated strings
+  const levelParam = selectedLevels.size > 0 ? Array.from(selectedLevels).join(",") : undefined;
+  const serviceParam = selectedServices.size > 0 ? Array.from(selectedServices).join(",") : undefined;
+
   const { data, isLoading, isError } = useLogs({
-    level: selectedLevel !== "all" ? selectedLevel : undefined,
-    service: selectedService !== "all" ? selectedService : undefined,
+    level: levelParam,
+    service: serviceParam,
     start_date: dateRange.start_date,
     end_date: dateRange.end_date,
     limit,
@@ -242,12 +296,12 @@ export default function LogsPage() {
     }
   };
 
-  const hasActiveFilters = timeFilter !== "all" || selectedLevel !== "all" || selectedService !== "all";
+  const hasActiveFilters = timeFilter !== "all" || selectedLevels.size > 0 || selectedServices.size > 0;                                                        
 
   const clearFilters = () => {
     setTimeFilter("all");
-    setSelectedLevel("all");
-    setSelectedService("all");
+    setSelectedLevels(new Set());
+    setSelectedServices(new Set());
     setPage(0);
   };
 
@@ -298,19 +352,19 @@ export default function LogsPage() {
               {/* Filters Content */}
               <div
                 className={`overflow-hidden transition-all duration-300 ${
-                  filtersExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+                  filtersExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"                                                                           
                 }`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="space-y-4 pt-2">
                   {/* Time Filter */}
                   <div>
-                    <label className="text-sm font-medium mb-2 block">Time Range</label>
+                    <label className="text-sm font-medium mb-2 block">Time Range</label>                                                                        
                     <div className="flex flex-wrap gap-2">
                       {TIME_FILTERS.map((filter) => (
                         <Button
                           key={filter.value}
-                          variant={timeFilter === filter.value ? "default" : "outline"}
+                          variant={timeFilter === filter.value ? "default" : "outline"}                                                                         
                           size="sm"
                           onClick={() => {
                             setTimeFilter(filter.value);
@@ -325,17 +379,34 @@ export default function LogsPage() {
 
                   {/* Level Filter */}
                   <div>
-                    <label className="text-sm font-medium mb-2 block">Level</label>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-medium">Level</label>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          onClick={selectAllLevels}
+                        >
+                          All
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          onClick={deselectAllLevels}
+                        >
+                          None
+                        </Button>
+                      </div>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {LOG_LEVELS.map((level) => (
                         <Button
                           key={level.value}
-                          variant={selectedLevel === level.value ? "default" : "outline"}
+                          variant={selectedLevels.has(level.value) ? "default" : "outline"}                                                                       
                           size="sm"
-                          onClick={() => {
-                            setSelectedLevel(level.value);
-                            setPage(0);
-                          }}
+                          onClick={() => toggleLevel(level.value)}
                         >
                           {level.label}
                         </Button>
@@ -345,30 +416,45 @@ export default function LogsPage() {
 
                   {/* Service Filter */}
                   <div>
-                    <label className="text-sm font-medium mb-2 block">
-                      Service
-                      {hasActiveFilters && (
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-medium">Service</label>
+                      <div className="flex gap-2">
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="ml-2 h-6 px-2"
-                          onClick={clearFilters}
+                          className="h-6 px-2 text-xs"
+                          onClick={selectAllServices}
                         >
-                          <X className="h-3 w-3 mr-1" />
-                          Clear All
+                          All
                         </Button>
-                      )}
-                    </label>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          onClick={deselectAllServices}
+                        >
+                          None
+                        </Button>
+                        {hasActiveFilters && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            onClick={clearFilters}
+                          >
+                            <X className="h-3 w-3 mr-1" />
+                            Clear All
+                          </Button>
+                        )}
+                      </div>
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {SERVICES.map((service) => (
                         <Button
                           key={service.value}
-                          variant={selectedService === service.value ? "default" : "outline"}
+                          variant={selectedServices.has(service.value) ? "default" : "outline"}                                                                   
                           size="sm"
-                          onClick={() => {
-                            setSelectedService(service.value);
-                            setPage(0);
-                          }}
+                          onClick={() => toggleService(service.value)}
                         >
                           {service.label}
                         </Button>
@@ -392,7 +478,7 @@ export default function LogsPage() {
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         ) : isError ? (
-          <div className="flex items-center justify-center py-12 text-destructive">
+          <div className="flex items-center justify-center py-12 text-destructive">                                                                             
             <AlertCircle className="h-5 w-5 mr-2" />
             Failed to load logs
           </div>
@@ -419,8 +505,8 @@ export default function LogsPage() {
                         <TableCell>
                           {getLevelIcon(log.level)}
                         </TableCell>
-                        <TableCell className="text-sm font-mono text-muted-foreground">
-                          {new Date(log.timestamp).toLocaleString("fr-FR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                        <TableCell className="text-sm font-mono text-muted-foreground">                                                                         
+                          {new Date(log.timestamp).toLocaleString("fr-FR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" })}                                                                        
                         </TableCell>
                         <TableCell>
                           {log.service && (

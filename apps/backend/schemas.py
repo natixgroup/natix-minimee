@@ -291,3 +291,35 @@ class ChatMessageResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+# WhatsApp Integration Schemas
+class WhatsAppIntegrationCreate(BaseModel):
+    user_id: int
+    integration_type: str  # 'user' or 'minimee'
+    phone_number: Optional[str] = None
+    display_name: Optional[str] = None
+    status: str = 'disconnected'  # connected/disconnected/pending
+    auth_info_path: Optional[str] = None
+
+
+class WhatsAppIntegrationUpdate(BaseModel):
+    phone_number: Optional[str] = None
+    display_name: Optional[str] = None
+    status: Optional[str] = None
+    auth_info_path: Optional[str] = None
+
+
+class WhatsAppIntegrationResponse(BaseModel):
+    id: int
+    user_id: int
+    integration_type: str
+    phone_number: Optional[str]
+    display_name: Optional[str]
+    status: str
+    auth_info_path: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
