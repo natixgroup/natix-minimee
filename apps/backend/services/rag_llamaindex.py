@@ -102,10 +102,12 @@ def retrieve_context(
                 "user_id": user_id,
                 "language": language,
                 "use_chunks": use_chunks,
-                "rerank_enabled": settings.rag_rerank_enabled
+                "rerank_enabled": settings.rag_rerank_enabled,
+                "conversation_id": conversation_id
             },
             request_id=request_id,
             user_id=user_id,
+            conversation_id=conversation_id,  # Pass conversation_id to log context
             metadata={"search_engine": "llamaindex" if settings.rag_rerank_enabled else "pgvector"}
         ) as log:
             # Reduce threshold when filtering by conversation_id to prioritize recent conversation context
