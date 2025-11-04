@@ -80,6 +80,24 @@ async def process_message(
     """
     request_id = generate_request_id()
     
+    # Log the incoming POST request with full details
+    from services.logs_service import log_to_db
+    log_to_db(
+        db,
+        "INFO",
+        f"POST /minimee/message - Received message",
+        service="api",
+        request_id=request_id,
+        metadata={
+            "content": message_data.content,
+            "sender": message_data.sender,
+            "source": message_data.source,
+            "conversation_id": message_data.conversation_id,
+            "user_id": message_data.user_id,
+            "timestamp": message_data.timestamp,
+        }
+    )
+    
     try:
         # Store message first
         message = Message(**message_data.model_dump())
@@ -154,7 +172,25 @@ async def process_message(
             status="success"
         )
         
-        log_to_db(db, "INFO", f"Processed message {message.id}, generated {len(options.options)} options", service="minimee")
+        log_to_db(
+            db, 
+            "INFO", 
+            f"Processed message {message.id}, generated {len(options.options)} options", 
+            service="minimee",
+            request_id=request_id,
+            metadata={
+                "message_id": message.id,
+                "message_content": message.content,
+                "sender": message.sender,
+                "source": message.source,
+                "conversation_id": message.conversation_id,
+                "options_count": len(options.options),
+                "options": options.options,  # Les options complètes
+                "option_1": options.options[0] if len(options.options) > 0 else None,
+                "option_2": options.options[1] if len(options.options) > 1 else None,
+                "option_3": options.options[2] if len(options.options) > 2 else None,
+            }
+        )
         
         # Broadcast WhatsApp message via WebSocket if source is whatsapp
         if message_data.source == "whatsapp":
@@ -687,7 +723,7 @@ async def chat_direct(
         )
         if rag_details.get('results'):
             log_to_db(db, "DEBUG",
-                f"RAG top results: {[{'content': r.get('content', '')[:50], 'similarity': r.get('similarity', 0):.2f, 'sender': r.get('sender', '')} for r in rag_details['results'][:3]]}",
+                f"RAG top results: {[{'content': r.get('content', '')[:50], 'similarity': round(r.get('similarity', 0), 2), 'sender': r.get('sender', '')} for r in rag_details['results'][:3]]}",
                 service="minimee_router",
                 request_id=request_id,
                 user_id=chat_request.user_id
