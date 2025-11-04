@@ -748,10 +748,11 @@ async function startUserBridge() {
                     // If backend returned a response, send it back to the group
                     if (chatResponse && chatResponse.response) {
                       const groupJid = msg.key.remoteJid;
-                      // Add prefix to identify Minimee messages and avoid loops
-                      const responseWithPrefix = `[🤖 Minimee] ${chatResponse.response}`;
+                      // Send response WITHOUT prefix to avoid detection issues
+                      // The message is already stored in DB by chat/direct endpoint
+                      // We just need to send it to the group
                       await sockUser.sendMessage(groupJid, { 
-                        text: responseWithPrefix,
+                        text: chatResponse.response,  // No prefix - message already in DB
                       });
                       
                       logger.info({
@@ -821,8 +822,38 @@ async function startUserBridge() {
           });
 
           // Forward to backend
-          // Note: We process ALL messages (including fromMe) to create embeddings
-          // The backend will decide what to do with them
+          // Note: We process messages to create embeddings, BUT:
+          // - If message is fromMe (user sent it) AND it's going to Minimee account, skip here
+          //   (it will be processed by Minimee session when received)
+          // - This prevents duplicate processing
+          if (msg.key.fromMe) {
+            // Check if this message is going to Minimee account
+            const recipientJid = msg.key.remoteJid;
+            if (recipientJid && recipientJid.includes('@') && !recipientJid.includes('@g.us')) {
+              // It's a direct message (not a group). Check if it's going to Minimee
+              try {
+                const bridgeUrl = process.env.BRIDGE_API_URL || 'http://localhost:3003';
+                const minimeeInfoResponse = await axios.get(`${bridgeUrl}/minimee/user-info`);
+                if (minimeeInfoResponse.data && minimeeInfoResponse.data.phone) {
+                  const minimeePhone = minimeeInfoResponse.data.phone.replace(/[^0-9]/g, '');
+                  const minimeePhoneJid = `${minimeePhone}@s.whatsapp.net`;
+                  const recipientPhone = recipientJid.split('@')[0].replace(/[^0-9]/g, '');
+                  if (recipientJid === minimeePhoneJid || recipientPhone === minimeePhone) {
+                    // This message is going to Minimee - skip processing here (Minimee session will handle it)
+                    logger.info({
+                      messageText: messageText.substring(0, 50),
+                      recipientJid,
+                    }, 'Skipping fromMe message to Minimee in User session (will be processed by Minimee session)');
+                    continue;
+                  }
+                }
+              } catch (error) {
+                // If we can't check, continue with normal processing
+                logger.debug({ error: error.message }, 'Could not check if recipient is Minimee, processing normally');
+              }
+            }
+          }
+          
           try {
             const conversationId = senderJid.split('@')[0];
             
@@ -1380,6 +1411,15 @@ async function startMinimeeBridge() {
               const userPhoneJid = `${userPhone}@s.whatsapp.net`;
               const senderPhone = senderJid.split('@')[0].replace(/[^0-9]/g, '');
               isUserMessage = senderJid === userPhoneJid || senderPhone === userPhone;
+              
+              logger.info({
+                senderJid,
+                userPhoneJid,
+                senderPhone,
+                userPhone,
+                isUserMessage,
+                messagePreview: messageText.substring(0, 50),
+              }, 'Minimee: Checking if message is from User');
             }
           } catch (error) {
             logger.warn({ error: error.message }, 'Could not check if sender is user, treating as user message');
@@ -1390,6 +1430,11 @@ async function startMinimeeBridge() {
           // Only process messages from user account (for dashboard sync)
           // Other messages would be external contacts talking to Minimee
           if (isUserMessage) {
+            logger.info({
+              senderJid,
+              senderName,
+              messagePreview: messageText.substring(0, 50),
+            }, 'Minimee: Processing message from User');
             // Use dashboard-minimee conversation_id for sync
             const conversationId = `dashboard-minimee-${USER_ID}`;
             
@@ -1403,7 +1448,64 @@ async function startMinimeeBridge() {
                 user_id: USER_ID,
               });
               
-              // Response will be sent back via Minimee account in chat_direct endpoint
+              logger.info({
+                hasChatResponse: !!chatResponse,
+                hasResponseField: !!(chatResponse && chatResponse.response),
+                responsePreview: chatResponse?.response?.substring(0, 50),
+                senderJid,
+                senderName,
+              }, 'Received chat response from backend');
+              
+              // Send response back to User WhatsApp via Minimee account
+              if (chatResponse && chatResponse.response) {
+                // Get User phone number - use the senderJid (which is the User's JID when they message Minimee)
+                const userPhoneJid = senderJid;
+                
+                logger.info({
+                  userPhoneJid,
+                  hasSockMinimee: !!sockMinimee,
+                  connectionStatusMinimee,
+                  isConnected: connectionStatusMinimee === 'connected',
+                }, 'Checking conditions before sending Minimee response');
+                
+                if (userPhoneJid && sockMinimee && connectionStatusMinimee === 'connected') {
+                  try {
+                    logger.info({
+                      recipient: userPhoneJid,
+                      messageLength: chatResponse.response.length,
+                    }, 'Attempting to send Minimee response to User WhatsApp');
+                    
+                    await sockMinimee.sendMessage(userPhoneJid, { 
+                      text: chatResponse.response,
+                    });
+                    
+                    logger.info({
+                      responseLength: chatResponse.response.length,
+                      conversationId,
+                      recipient: userPhoneJid,
+                    }, 'Minimee response sent to User WhatsApp successfully');
+                  } catch (error) {
+                    logger.error({ 
+                      error: error.message,
+                      errorStack: error.stack,
+                      recipient: userPhoneJid,
+                    }, 'Error sending Minimee response to User WhatsApp');
+                  }
+                } else {
+                  logger.warn({
+                    userPhoneJid,
+                    minimeeConnected: connectionStatusMinimee === 'connected',
+                    hasSockMinimee: !!sockMinimee,
+                    connectionStatusMinimee,
+                  }, 'Cannot send Minimee response - missing user phone or Minimee not connected');
+                }
+              } else {
+                logger.warn({
+                  hasChatResponse: !!chatResponse,
+                  hasResponseField: !!(chatResponse && chatResponse.response),
+                  chatResponseKeys: chatResponse ? Object.keys(chatResponse) : [],
+                }, 'Chat response missing or does not contain response field');
+              }
             } catch (error) {
               logger.error({ 
                 error: error.message,
@@ -2215,7 +2317,17 @@ app.post('/bridge/test-message', async (req, res) => {
           message: 'Minimee TEAM group not found. Please ensure it is initialized.',
         });
       }
+      
+      if (!group.id) {
+        logger.error({ group }, 'Group found but ID is missing');
+        return res.status(500).json({
+          status: 'error',
+          message: 'Minimee TEAM group ID is missing',
+        });
+      }
+      
       recipientJid = group.id;
+      logger.info({ groupId: recipientJid, sender }, 'Using group ID for test message');
     }
 
     // Send test message with timeout (10 seconds)

@@ -29,9 +29,17 @@ async def generate_response_options(
     """
     Generate multiple response options for user approval
     """
-    # Retrieve context using RAG (sera loggé dans rag.py)
+    # Retrieve context using RAG (limit to current conversation for better context)
     try:
-        context = retrieve_context(db, message.content, message.user_id, request_id=request_id)
+        context = retrieve_context(
+            db, 
+            message.content, 
+            message.user_id,
+            limit=5,
+            conversation_id=message.conversation_id,  # Prioritize current conversation
+            sender=message.sender,  # Filter by sender for better relevance
+            request_id=request_id
+        )
     except Exception as e:
         # log_to_db is already imported at the top of the file
         log_to_db(db, "WARNING", f"RAG context error: {str(e)}, using empty context", service="approval_flow")

@@ -491,11 +491,13 @@ async def chat_stream(
             store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id, message=user_message)
             db.commit()
             
-            # 3. Retrieve context using RAG
+            # 3. Retrieve context using RAG (limit to current conversation)
             context, rag_details = retrieve_context(
                 db,
                 chat_request.content,
                 chat_request.user_id,
+                limit=10,
+                conversation_id=conversation_id,  # Prioritize current conversation
                 request_id=request_id,
                 return_details=True
             )
@@ -589,7 +591,7 @@ async def chat_stream(
                                     await send_message_via_minimee_bridge(
                                         recipient=user_jid,
                                         message_text=final_response,
-                                        source='whatsapp',
+                                        source='minimee',  # Use 'minimee' source to match DB entry
                                         db=db
                                     )
                                 except Exception as send_error:
@@ -663,11 +665,13 @@ async def chat_direct(
         store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id, message=user_message)
         db.commit()
         
-        # 3. Retrieve context using RAG
+        # 3. Retrieve context using RAG (limit to current conversation for better context)
         context, rag_details = retrieve_context(
             db,
             chat_request.content,
             chat_request.user_id,
+            limit=10,  # Get more context for chat
+            conversation_id=conversation_id,  # Prioritize current conversation
             request_id=request_id,
             return_details=True
         )
@@ -729,44 +733,20 @@ async def chat_direct(
             })
             
             # Broadcast Minimee's response
-            # If conversation_id is dashboard-minimee, this is a sync from WhatsApp to dashboard
+            # Use "minimee" source to match DB entry and avoid duplicates
             await websocket_manager.broadcast_whatsapp_message({
                 "id": minimee_message.id,
                 "content": minimee_message.content,
                 "sender": "Minimee",
                 "timestamp": minimee_message.timestamp.isoformat(),
-                "source": "whatsapp",  # Keep as whatsapp to show badge in dashboard
+                "source": "minimee",  # Use "minimee" source to match DB and avoid duplicates
                 "conversation_id": minimee_message.conversation_id,
             })
         
-        # If conversation_id is dashboard-minimee, send response back via WhatsApp Minimee
-        # (This handles the case where user sends message via WhatsApp to Minimee)
-        if conversation_id.startswith(f"dashboard-minimee-"):
-            try:
-                from services.whatsapp_integration_service import get_user_phone_number
-                from services.bridge_client import send_message_via_minimee_bridge
-                
-                user_phone = get_user_phone_number(db, chat_request.user_id)
-                if user_phone:
-                    # Format phone number to JID
-                    user_jid = f"{user_phone.replace('+', '').replace(' ', '')}@s.whatsapp.net"
-                    
-                    # Send response via Minimee account to User
-                    await send_message_via_minimee_bridge(
-                        recipient=user_jid,
-                        message_text=response,
-                        source='whatsapp',
-                        db=db
-                    )
-            except Exception as sync_error:
-                # Log error but don't fail the request
-                log_to_db(
-                    db,
-                    "WARNING",
-                    f"Failed to sync response to WhatsApp Minimee: {str(sync_error)}",
-                    service="minimee",
-                    request_id=request_id
-                )
+        # Note: Response sending to WhatsApp is now handled directly by the bridge
+        # when it receives the chatResponse from this endpoint.
+        # The bridge will send the response via sockMinimee to the user's WhatsApp.
+        # We no longer try to send from here to avoid dependency on whatsapp_integrations table.
         
         return {
             "response": response,

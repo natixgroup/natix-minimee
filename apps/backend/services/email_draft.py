@@ -41,14 +41,15 @@ async def generate_email_drafts(
         if not last_message:
             raise ValueError(f"No messages found in thread {thread_id}")
         
-        # Retrieve context using RAG (searches Gmail history)
+        # Retrieve context using RAG (searches Gmail history, limit to current thread)
         context = retrieve_context(
             db=db,
             query=last_message.content,
             user_id=user_id,
             limit=5,
             language=None,
-            use_chunks=True
+            use_chunks=True,
+            conversation_id=thread_id  # Limit to current thread for better context
         )
         
         # Select appropriate agent

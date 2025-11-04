@@ -63,7 +63,7 @@ export function useEmbeddings(params?: {
     if (params?.realTime) {
       pollingIntervalRef.current = setInterval(() => {
         fetchEmbeddings();
-      }, 2000);
+      }, 2000);  // 2 seconds
 
       return () => {
         if (pollingIntervalRef.current) {

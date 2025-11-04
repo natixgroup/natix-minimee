@@ -77,6 +77,7 @@ def retrieve_context(
     use_chunks: bool = True,
     sender: Optional[str] = None,
     recipient: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     request_id: Optional[str] = None,
     return_details: bool = False
 ) -> Union[str, Tuple[str, Dict]]:
@@ -116,6 +117,7 @@ def retrieve_context(
                 use_chunks=use_chunks,
                 sender=sender,
                 recipient=recipient,
+                conversation_id=conversation_id,
                 request_id=request_id
             )
             
@@ -219,6 +221,7 @@ def find_similar_messages_enhanced(
     use_chunks: bool = True,
     sender: Optional[str] = None,
     recipient: Optional[str] = None,
+    conversation_id: Optional[str] = None,
     request_id: Optional[str] = None
 ) -> List[Dict]:
     """
@@ -305,6 +308,15 @@ def find_similar_messages_enhanced(
     
     if not use_chunks:
         query_sql += " AND e.metadata->>'chunk' != 'true'"
+    
+    # Filter by conversation_id (prioritize current conversation)
+    if conversation_id:
+        query_sql += """ AND (
+            m.conversation_id = :conversation_id 
+            OR e.metadata->>'conversation_id' = :conversation_id
+            OR e.metadata->>'thread_id' = :conversation_id
+        )"""
+        params["conversation_id"] = conversation_id
     
     # Order by chunk priority and similarity
     if use_chunks:
