@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dimension: int = 384
     
+    # RAG Reranking Configuration
+    # Reranking improves retrieval quality by re-evaluating relevance using a cross-encoder model
+    # Cross-encoder compares query + document directly (more accurate than vector similarity alone)
+    # Process: Retrieve top 20 → Rerank → Return top 10 (configurable)
+    rag_rerank_enabled: bool = True  # Enable/disable reranking
+    rag_rerank_top_k: int = 20  # Number of results to rerank (before keeping top limit)
+    rag_rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Cross-encoder model for reranking
+    
     # Gmail OAuth
     gmail_client_id: Optional[str] = None
     gmail_client_secret: Optional[str] = None

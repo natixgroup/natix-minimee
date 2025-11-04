@@ -4,11 +4,13 @@ Embedding generation service using sentence-transformers
 import time
 from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, Dict
+from datetime import datetime
 from models import Embedding, Message
 from config import settings
 from services.metrics import record_embedding_generation
 from services.action_logger import log_action_context
+from services.language_detector import detect_language
 
 
 # Load model once (singleton pattern)
@@ -62,18 +64,72 @@ def generate_embedding(text: str, db: Optional[Session] = None, request_id: Opti
     return embedding.tolist()
 
 
+def build_embedding_metadata(
+    message: Message,
+    language: Optional[str] = None,
+    chunk: bool = False,
+    **extra_metadata
+) -> Dict:
+    """
+    Build standard metadata dict for embedding from a Message object
+    Includes: sender, recipient, recipients, source, conversation_id, language, timestamp, chunk
+    """
+    metadata = {
+        'sender': message.sender,
+        'source': message.source,
+        'conversation_id': message.conversation_id,
+        'chunk': 'true' if chunk else 'false',
+        'timestamp': message.timestamp.isoformat() if message.timestamp else datetime.utcnow().isoformat(),
+    }
+    
+    # Add recipient info (for 1-1 conversations)
+    if message.recipient:
+        metadata['recipient'] = message.recipient
+    
+    # Add recipients list (for group conversations)
+    if message.recipients:
+        metadata['recipients'] = message.recipients
+    
+    # Add language (detect if not provided)
+    if language is None and message.content:
+        detected_lang = detect_language(message.content)
+        if detected_lang:
+            metadata['language'] = detected_lang
+    elif language:
+        metadata['language'] = language
+    
+    # Add any extra metadata
+    metadata.update(extra_metadata)
+    
+    return metadata
+
+
 def store_embedding(
     db: Session,
     text: str,
     message_id: Optional[int] = None,
     metadata: Optional[dict] = None,
     request_id: Optional[str] = None,
-    user_id: Optional[int] = None
+    user_id: Optional[int] = None,
+    message: Optional[Message] = None
 ) -> Embedding:
     """
     Generate and store embedding in database
     Supports both individual messages and chunks
+    
+    Args:
+        message: Optional Message object to auto-generate metadata from
+        metadata: Optional dict to override or supplement auto-generated metadata
     """
+    # Auto-generate metadata from message if provided and metadata not explicitly set
+    if message and metadata is None:
+        metadata = build_embedding_metadata(message)
+    elif message and metadata:
+        # Merge: start with auto-generated, then override with provided metadata
+        auto_metadata = build_embedding_metadata(message)
+        auto_metadata.update(metadata)
+        metadata = auto_metadata
+    
     vector = generate_embedding(text, db=db, request_id=request_id, user_id=user_id)
     
     # Convert list to pgvector format string

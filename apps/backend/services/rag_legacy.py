@@ -1,6 +1,9 @@
 """
-Retrieval-Augmented Generation service
-Enhanced with top-k similarity search and chunk support
+ARCHIVED: Legacy RAG service using raw SQL + pgvector
+This file is archived and kept for reference only.
+Migrated to services/rag_llamaindex.py with LlamaIndex + reranking support.
+
+Date archived: 2024-01-XX
 """
 from sqlalchemy.orm import Session
 from sqlalchemy import text as sql_text
@@ -336,3 +339,4 @@ def build_prompt_with_context(
     prompt_parts.append("Generate a personalized response that matches the user's style and context.")
     
     return "\n".join(prompt_parts)
+

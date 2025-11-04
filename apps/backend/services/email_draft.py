@@ -6,7 +6,7 @@ import asyncio
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from models import GmailThread, Message
-from services.rag import retrieve_context
+from services.rag_llamaindex import retrieve_context
 from services.llm_router import generate_multiple_options
 from services.agent_manager import select_agent_for_context
 from services.logs_service import log_to_db

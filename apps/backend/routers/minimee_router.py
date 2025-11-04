@@ -15,7 +15,7 @@ from models import PendingApproval
 from services.embeddings import store_embedding
 from services.logs_service import log_to_db
 from services.action_logger import log_action, generate_request_id
-from services.rag import retrieve_context, build_prompt_with_context
+from services.rag_llamaindex import retrieve_context, build_prompt_with_context
 from services.agent_manager import select_agent_for_context
 from services.llm_router import generate_llm_response_stream, generate_llm_response
 from services.websocket_manager import websocket_manager
@@ -107,7 +107,7 @@ async def process_message(
         # 2. Generate embedding (sera loggé dans embeddings.py)
         # Include sender in text for better RAG search (helps find conversations by person name)
         text_with_sender = f"{message.sender}: {message.content}" if message.sender else message.content
-        store_embedding(db, text_with_sender, message_id=message.id, request_id=request_id, user_id=message_data.user_id)
+        store_embedding(db, text_with_sender, message_id=message.id, request_id=request_id, user_id=message_data.user_id, message=message)
         db.commit()  # Commit embedding before generating options
         
         # 3-7. Generate response options (sera loggé dans approval_flow.py et rag.py)
@@ -467,7 +467,8 @@ async def chat_stream(
     Uses RAG for context and streams LLM response token by token
     """
     request_id = generate_request_id()
-    conversation_id = chat_request.conversation_id or f"dashboard-user-{chat_request.user_id}"
+    # Use fixed conversation_id for dashboard chat with Minimee
+    conversation_id = chat_request.conversation_id or f"dashboard-minimee-{chat_request.user_id}"
     
     async def event_generator():
         try:
@@ -487,7 +488,7 @@ async def chat_stream(
             # 2. Generate embedding for user message
             # Include sender in text for better RAG search
             text_with_sender = f"{user_message.sender}: {user_message.content}" if user_message.sender else user_message.content
-            store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id)
+            store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id, message=user_message)
             db.commit()
             
             # 3. Retrieve context using RAG
@@ -563,11 +564,53 @@ async def chat_stream(
                     db.refresh(minimee_message)
                     
                     # 8. Generate embedding for Minimee response
-                    store_embedding(db, minimee_message.content, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id)
+                    text_with_sender = f"{minimee_message.sender}: {minimee_message.content}" if minimee_message.sender else minimee_message.content
+                    store_embedding(db, text_with_sender, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id, message=minimee_message)
                     db.commit()
                     
                     # 9. Send final event with debug info
                     yield f"data: {json.dumps({'type': 'done', 'response': final_response, 'actions': actions, 'message_id': minimee_message.id, 'debug': {'llm_provider': llm_provider, 'llm_model': llm_model, 'rag_context': context, 'rag_details': rag_details}})}\n\n"
+                    
+                    # 10. Sync with WhatsApp Minimee if conversation_id is dashboard-minimee
+                    # Send response via WhatsApp Minimee to user's account (after streaming is complete)
+                    if conversation_id.startswith(f"dashboard-minimee-"):
+                        try:
+                            from services.whatsapp_integration_service import get_user_phone_number
+                            from services.bridge_client import send_message_via_minimee_bridge
+                            
+                            user_phone = get_user_phone_number(db, chat_request.user_id)
+                            if user_phone:
+                                # Format phone number to JID
+                                user_jid = f"{user_phone.replace('+', '').replace(' ', '')}@s.whatsapp.net"
+                                
+                                # Send response via Minimee account to User
+                                # Do this after yield to avoid blocking the stream
+                                try:
+                                    await send_message_via_minimee_bridge(
+                                        recipient=user_jid,
+                                        message_text=final_response,
+                                        source='whatsapp',
+                                        db=db
+                                    )
+                                except Exception as send_error:
+                                    # Log but don't fail - sync is best effort
+                                    log_to_db(
+                                        db,
+                                        "WARNING",
+                                        f"Failed to send response via WhatsApp Minimee: {str(send_error)}",
+                                        service="minimee",
+                                        request_id=request_id
+                                    )
+                        except Exception as sync_error:
+                            # Log error but don't fail the request
+                            log_to_db(
+                                db,
+                                "WARNING",
+                                f"Failed to sync response to WhatsApp Minimee: {str(sync_error)}",
+                                service="minimee",
+                                request_id=request_id
+                            )
+                    
                     break
                     
         except Exception as e:
@@ -596,6 +639,8 @@ async def chat_direct(
     Similar to /minimee/chat/stream but synchronous and non-streaming
     """
     request_id = generate_request_id()
+    # Use conversation_id from request if provided (could be dashboard-minimee-{user_id} for sync)
+    # Otherwise default to minimee-team for group messages
     conversation_id = chat_request.conversation_id or f"minimee-team-{chat_request.user_id}"
     
     try:
@@ -614,7 +659,8 @@ async def chat_direct(
         db.refresh(user_message)
         
         # 2. Generate embedding for user message
-        store_embedding(db, user_message.content, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id)
+        text_with_sender = f"{user_message.sender}: {user_message.content}" if user_message.sender else user_message.content
+        store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id, message=user_message)
         db.commit()
         
         # 3. Retrieve context using RAG
@@ -665,11 +711,14 @@ async def chat_direct(
         db.refresh(minimee_message)
         
         # 8. Generate embedding for Minimee response
-        store_embedding(db, minimee_message.content, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id)
+        text_with_sender = f"{minimee_message.sender}: {minimee_message.content}" if minimee_message.sender else minimee_message.content
+        store_embedding(db, text_with_sender, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id, message=minimee_message)
         db.commit()
         
         # 9. Broadcast to WebSocket if source is whatsapp
+        # Special handling for dashboard-minimee conversation_id (sync from WhatsApp to dashboard)
         if chat_request.source == "whatsapp":
+            # Broadcast user message
             await websocket_manager.broadcast_whatsapp_message({
                 "id": user_message.id,
                 "content": user_message.content,
@@ -679,7 +728,8 @@ async def chat_direct(
                 "conversation_id": user_message.conversation_id,
             })
             
-            # Also broadcast Minimee's response (keep source as "whatsapp" to show badge)
+            # Broadcast Minimee's response
+            # If conversation_id is dashboard-minimee, this is a sync from WhatsApp to dashboard
             await websocket_manager.broadcast_whatsapp_message({
                 "id": minimee_message.id,
                 "content": minimee_message.content,
@@ -688,6 +738,35 @@ async def chat_direct(
                 "source": "whatsapp",  # Keep as whatsapp to show badge in dashboard
                 "conversation_id": minimee_message.conversation_id,
             })
+        
+        # If conversation_id is dashboard-minimee, send response back via WhatsApp Minimee
+        # (This handles the case where user sends message via WhatsApp to Minimee)
+        if conversation_id.startswith(f"dashboard-minimee-"):
+            try:
+                from services.whatsapp_integration_service import get_user_phone_number
+                from services.bridge_client import send_message_via_minimee_bridge
+                
+                user_phone = get_user_phone_number(db, chat_request.user_id)
+                if user_phone:
+                    # Format phone number to JID
+                    user_jid = f"{user_phone.replace('+', '').replace(' ', '')}@s.whatsapp.net"
+                    
+                    # Send response via Minimee account to User
+                    await send_message_via_minimee_bridge(
+                        recipient=user_jid,
+                        message_text=response,
+                        source='whatsapp',
+                        db=db
+                    )
+            except Exception as sync_error:
+                # Log error but don't fail the request
+                log_to_db(
+                    db,
+                    "WARNING",
+                    f"Failed to sync response to WhatsApp Minimee: {str(sync_error)}",
+                    service="minimee",
+                    request_id=request_id
+                )
         
         return {
             "response": response,

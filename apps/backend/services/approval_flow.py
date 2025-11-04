@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from services.llm_router import generate_multiple_options
-from services.rag import retrieve_context, build_prompt_with_context
+from services.rag_llamaindex import retrieve_context, build_prompt_with_context
 from services.agent_manager import select_agent_for_context
 from services.action_logger import log_action_context, log_action
 from services.logs_service import log_to_db
@@ -433,6 +433,7 @@ async def process_message_approval(
             }
         
         # Send message via bridge
+        # IMPORTANT: Always send via USER account, even if message came from MINIMEE account
         try:
             start_time = datetime.utcnow()
             # Add prefix to identify Minimee messages and avoid loops
@@ -441,7 +442,8 @@ async def process_message_approval(
                 recipient=recipient,
                 message_text=message_with_prefix,
                 source=pending_approval.source,
-                db=db
+                db=db,
+                integration_type='user'  # Always use USER account for approved messages
             )
             duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             

@@ -19,4 +19,8 @@ python-multipart==0.0.6
 pytest==7.4.3
 pytest-asyncio==0.21.1
 langdetect==1.0.9
+llama-index>=0.10.0
+llama-index-vector-stores-postgres>=0.1.0
+llama-index-embeddings-huggingface>=0.1.0
+llama-index-postprocessor-sentence-transformer-rerank>=0.1.0
 
