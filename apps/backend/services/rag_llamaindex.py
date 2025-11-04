@@ -318,11 +318,17 @@ def find_similar_messages_enhanced(
         )"""
         params["conversation_id"] = conversation_id
     
-    # Order by chunk priority and similarity
+    # Order by chunk priority, similarity, and timestamp (recent messages first)
+    # This ensures that among messages with similar relevance, the most recent ones are prioritized
     if use_chunks:
-        query_sql += " ORDER BY is_chunk DESC, e.vector <=> CAST(:query_vector AS vector)"
+        query_sql += """ ORDER BY 
+            is_chunk DESC, 
+            e.vector <=> CAST(:query_vector AS vector),
+            COALESCE(m.timestamp, m.created_at, e.created_at) DESC NULLS LAST"""
     else:
-        query_sql += " ORDER BY e.vector <=> CAST(:query_vector AS vector)"
+        query_sql += """ ORDER BY 
+            e.vector <=> CAST(:query_vector AS vector),
+            COALESCE(m.timestamp, m.created_at, e.created_at) DESC NULLS LAST"""
     
     query_sql += " LIMIT :limit"
     
