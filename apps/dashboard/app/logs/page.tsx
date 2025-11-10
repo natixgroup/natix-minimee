@@ -1,15 +1,26 @@
 "use client";
 
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useState, useMemo, useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { useLogs } from "@/lib/hooks/useLogs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";                                                          
-import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle, Filter, X, ChevronDown, ChevronUp } from "lucide-react";                                       
+import { Loader2, AlertCircle, Info, CheckCircle, AlertTriangle, Filter, X, ChevronDown, ChevronUp, Trash2 } from "lucide-react";                                       
 import { Log } from "@/lib/api";
-
+import { api } from "@/lib/api";
 // Simple Tooltip component for logs
 function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) {                                                                               
   const [show, setShow] = useState(false);
@@ -92,7 +103,102 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
                     Metadata:
                   </div>
                   <div className="space-y-2 max-h-96 overflow-y-auto">
-                    {Object.entries(log.metadata).map(([key, value]) => {
+                    {(() => {
+                      // First, check if options exist and render them prominently
+                      const options = log.metadata?.options;
+                      const hasOptions = Array.isArray(options) && options.length > 0;
+                      
+                      // Get all entries
+                      const entries = Object.entries(log.metadata || {});
+                      
+                      // Separate options from other entries
+                      const otherEntries = entries.filter(([key]) => key !== "options");
+                      
+                      return (
+                        <>
+                          {hasOptions && (
+                            <div className="border-b pb-3 mb-3 last:border-0">
+                              <div className="text-muted-foreground font-medium text-xs mb-2">
+                                Options générées ({options.length}):
+                              </div>
+                              <div className="space-y-2">
+                                {options.map((option, idx) => (
+                                  <div key={idx} className="bg-primary/10 border border-primary/20 p-2 rounded text-xs">
+                                    <span className="font-medium text-primary">Option {idx + 1}:</span>
+                                    <div className="mt-1 whitespace-pre-wrap text-foreground">
+                                      {typeof option === "string" ? option : JSON.stringify(option, null, 2)}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {otherEntries.map(([key, value]) => {
+                      // Special handling for options
+                      if (key === "options" && Array.isArray(value)) {
+                        return (
+                          <div key={key} className="border-b pb-2 last:border-0">
+                            <div className="text-muted-foreground font-medium text-xs mb-2">
+                              {key} ({value.length} options):
+                            </div>
+                            <div className="space-y-2">
+                              {value.map((option, idx) => (
+                                <div key={idx} className="bg-muted p-2 rounded text-xs">
+                                  <span className="font-medium text-muted-foreground">Option {idx + 1}:</span>
+                                  <div className="mt-1 whitespace-pre-wrap">{option}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      // Special handling for option_1, option_2, option_3
+                      if (key.startsWith("option_") && typeof value === "string") {
+                        const optionNum = key.replace("option_", "");
+                        return (
+                          <div key={key} className="border-b pb-2 last:border-0">
+                            <div className="text-muted-foreground font-medium text-xs mb-1">
+                              Option {optionNum}:
+                            </div>
+                            <div className="bg-muted p-2 rounded text-xs whitespace-pre-wrap">
+                              {value}
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      // Special handling for request_body (POST request details)
+                      if (key === "request_body" && typeof value === "object") {
+                        return (
+                          <div key={key} className="border-b pb-2 last:border-0">
+                            <div className="text-muted-foreground font-medium text-xs mb-2">
+                              Request Body:
+                            </div>
+                            <div className="bg-muted p-2 rounded text-xs">
+                              <pre className="whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                {JSON.stringify(value, null, 2)}
+                              </pre>
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      // Special handling for content (truncate if too long)
+                      if (key === "content" && typeof value === "string" && value.length > 200) {
+                        return (
+                          <div key={key} className="border-b pb-2 last:border-0">
+                            <div className="text-muted-foreground font-medium text-xs mb-1">
+                              {key}:
+                            </div>
+                            <div className="text-xs break-words whitespace-pre-wrap">
+                              {value.substring(0, 300)}...
+                              <span className="text-muted-foreground"> ({value.length} chars)</span>
+                            </div>
+                          </div>
+                        );
+                      }
+                      
                       const stringValue = typeof value === "object" 
                         ? JSON.stringify(value, null, 2)
                         : String(value);
@@ -120,6 +226,9 @@ function LogTooltip({ log, children }: { log: Log; children: React.ReactNode }) 
                         </div>
                       );
                     })}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               </>
@@ -171,7 +280,24 @@ export default function LogsPage() {
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(0);
   const [filtersExpanded, setFiltersExpanded] = useState(true);
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
+  // Hide frontend HTTP requests by default
+  const [hideFrontendRequests, setHideFrontendRequests] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("logs-hide-frontend");
+      return saved !== null ? saved === "true" : true; // Default to true
+    }
+    return true;
+  });
   const limit = 50;
+
+  // Save hideFrontendRequests preference to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("logs-hide-frontend", String(hideFrontendRequests));
+    }
+  }, [hideFrontendRequests]);
 
   // Calculate date range from time filter
   const dateRange = useMemo(() => {
@@ -268,7 +394,7 @@ export default function LogsPage() {
   const levelParam = selectedLevels.size > 0 ? Array.from(selectedLevels).join(",") : undefined;
   const serviceParam = selectedServices.size > 0 ? Array.from(selectedServices).join(",") : undefined;
 
-  const { data, isLoading, isError } = useLogs({
+  const { data, isLoading, isError, refetch } = useLogs({
     level: levelParam,
     service: serviceParam,
     start_date: dateRange.start_date,
@@ -277,7 +403,11 @@ export default function LogsPage() {
     offset: page * limit,
   });
 
-  const logs: Log[] = data?.logs || [];
+  const allLogs: Log[] = data?.logs || [];
+  // Filter out frontend requests if option is enabled
+  const logs = hideFrontendRequests
+    ? allLogs.filter(log => log.service !== "frontend")
+    : allLogs;
   const total = data?.total || 0;
   const totalPages = data?.total_pages || 0;
 
@@ -305,14 +435,66 @@ export default function LogsPage() {
     setPage(0);
   };
 
+  
+
+  // Handler for purging logs
+  const handlePurge = async () => {
+    setIsPurging(true);
+    try {
+      const result = await api.deleteLogs({
+        level: levelParam,
+        service: serviceParam,
+        start_date: dateRange.start_date,
+        end_date: dateRange.end_date,
+      });
+      toast.success(result.message || `${result.deleted} log(s) supprimé(s)`);
+      setShowPurgeConfirm(false);
+      setPage(0);
+      // Refetch logs
+      await refetch();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Erreur lors de la suppression"
+      );
+    } finally {
+      setIsPurging(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold">Logs</h1>
-          <p className="text-muted-foreground">
-            System and application logs with detailed metadata
-          </p>
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold">Logs</h1>
+              <p className="text-muted-foreground">
+                System and application logs with detailed metadata
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="hide-frontend-toggle" className="text-sm cursor-pointer whitespace-nowrap">
+                Cacher les requêtes HTTP du frontend
+              </Label>
+              <Switch
+                id="hide-frontend-toggle"
+                checked={hideFrontendRequests}
+                onCheckedChange={setHideFrontendRequests}
+              />
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowPurgeConfirm(true)}
+              disabled={isPurging || total === 0}
+              className="flex items-center gap-2 whitespace-nowrap"
+            >
+              <Trash2 className="h-4 w-4" />
+              Purger les logs filtrés
+            </Button>
+          </div>
         </div>
 
         {/* Filters Card */}
@@ -554,6 +736,47 @@ export default function LogsPage() {
           </>
         )}
       </div>
-    </DashboardLayout>
+          {/* Purge confirmation dialog */}
+      <Dialog open={showPurgeConfirm} onOpenChange={setShowPurgeConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmer la suppression</DialogTitle>
+            <DialogDescription>
+              Vous êtes sur le point de supprimer <strong>{total} log(s)</strong> correspondant aux filtres actuels.
+              <br />
+              <br />
+              Cette action est <strong className="text-destructive">irréversible</strong>.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowPurgeConfirm(false)}
+              disabled={isPurging}
+            >
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handlePurge}
+              disabled={isPurging}
+              className="flex items-center gap-2"
+            >
+              {isPurging ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Suppression...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4" />
+                  Supprimer {total} log(s)
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+</DashboardLayout>
   );
 }

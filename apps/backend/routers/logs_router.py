@@ -165,6 +165,84 @@ async def get_logs_endpoint(
     }
 
 
+@router.delete("/logs")
+async def delete_logs(
+    level: Optional[str] = Query(None, description="Filter by level (comma-separated for multiple)"),
+    service: Optional[str] = Query(None, description="Filter by service (comma-separated for multiple)"),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete logs matching the specified filters
+    Uses the same filters as GET /logs to ensure consistency.
+    Returns count of deleted logs.
+    """
+    from models import Log
+    from services.logs_service import log_to_db
+    from sqlalchemy import or_
+    
+    try:
+        query = db.query(Log)
+        
+        # Support multiple levels (comma-separated)
+        if level:
+            levels = [l.strip().upper() for l in level.split(",") if l.strip()]
+            if levels:
+                query = query.filter(Log.level.in_(levels))
+        
+        # Support multiple services (comma-separated)
+        if service:
+            services = [s.strip() for s in service.split(",") if s.strip()]
+            if services:
+                query = query.filter(Log.service.in_(services))
+        
+        if start_date:
+            query = query.filter(Log.timestamp >= start_date)
+        if end_date:
+            query = query.filter(Log.timestamp <= end_date)
+        
+        # Count before deletion
+        count = query.count()
+        
+        if count == 0:
+            return {
+                "deleted": 0,
+                "message": "No logs found matching the filters"
+            }
+        
+        # Delete logs
+        deleted_count = query.delete(synchronize_session=False)
+        db.commit()
+        
+        log_to_db(
+            db,
+            "INFO",
+            f"Deleted {deleted_count} logs",
+            service="logs",
+            metadata={
+                "deleted_count": deleted_count,
+                "filters": {
+                    "level": level,
+                    "service": service,
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                }
+            }
+        )
+        
+        return {
+            "deleted": deleted_count,
+            "message": f"Successfully deleted {deleted_count} log(s)"
+        }
+    
+    except Exception as e:
+        db.rollback()
+        log_to_db(db, "ERROR", f"Error deleting logs: {str(e)}", service="logs")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Error deleting logs: {str(e)}")
+
+
 @router.get("/action-logs", response_model=list[ActionLogResponse])
 async def get_action_logs_endpoint(
     action_type: Optional[str] = Query(None),

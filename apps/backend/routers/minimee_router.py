@@ -15,8 +15,10 @@ from models import PendingApproval
 from services.embeddings import store_embedding
 from services.logs_service import log_to_db
 from services.action_logger import log_action, generate_request_id
-from services.rag_llamaindex import retrieve_context, build_prompt_with_context
-from services.agent_manager import select_agent_for_context
+# Archived: from services.rag_llamaindex import retrieve_context, build_prompt_with_context
+# Now using LangChain-based RAG in services/minimee_agent/
+from services.agent_manager import select_agent_for_context, get_agent_by_whatsapp_name, get_minimee_leader
+from services.minimee_agent.agent_factory import get_or_create_agent, get_minimee_leader_agent, get_agent_by_whatsapp_name as get_agent_by_whatsapp_name_factory
 from services.llm_router import generate_llm_response_stream, generate_llm_response
 from services.websocket_manager import websocket_manager
 from config import settings
@@ -172,10 +174,12 @@ async def process_message(
             status="success"
         )
         
+        # Ensure options are available before logging
+        options_list = options.options if hasattr(options, 'options') else []
         log_to_db(
             db, 
             "INFO", 
-            f"Processed message {message.id}, generated {len(options.options)} options", 
+            f"Processed message {message.id}, generated {len(options_list)} options", 
             service="minimee",
             request_id=request_id,
             metadata={
@@ -184,11 +188,11 @@ async def process_message(
                 "sender": message.sender,
                 "source": message.source,
                 "conversation_id": message.conversation_id,
-                "options_count": len(options.options),
-                "options": options.options,  # Les options complètes
-                "option_1": options.options[0] if len(options.options) > 0 else None,
-                "option_2": options.options[1] if len(options.options) > 1 else None,
-                "option_3": options.options[2] if len(options.options) > 2 else None,
+                "options_count": len(options_list),
+                "options": options_list,  # Les options complètes
+                "option_1": options_list[0] if len(options_list) > 0 else None,
+                "option_2": options_list[1] if len(options_list) > 1 else None,
+                "option_3": options_list[2] if len(options_list) > 2 else None,
             }
         )
         
@@ -500,11 +504,19 @@ async def chat_stream(
 ):
     """
     Chat endpoint with streaming response
-    Uses RAG for context and streams LLM response token by token
+    Now uses LangChain MinimeeAgent with intelligent RAG and streaming
     """
     request_id = generate_request_id()
-    # Use fixed conversation_id for dashboard chat with Minimee
     conversation_id = chat_request.conversation_id or f"dashboard-minimee-{chat_request.user_id}"
+    
+    log_to_db(db, "INFO", 
+        f"Chat stream request received: user_id={chat_request.user_id}, conversation_id={conversation_id}, "
+        f"agent_name={chat_request.agent_name}, content_preview={chat_request.content[:100]}",
+        service="minimee_router",
+        request_id=request_id,
+        user_id=chat_request.user_id,
+        metadata={"agent_name": chat_request.agent_name, "source": chat_request.source}
+    )
     
     async def event_generator():
         try:
@@ -521,77 +533,141 @@ async def chat_stream(
             db.commit()
             db.refresh(user_message)
             
+            log_to_db(db, "INFO", 
+                f"User message stored: message_id={user_message.id}, content_length={len(chat_request.content)}",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id,
+                metadata={"message_id": user_message.id}
+            )
+            
             # 2. Generate embedding for user message
-            # Include sender in text for better RAG search
             text_with_sender = f"{user_message.sender}: {user_message.content}" if user_message.sender else user_message.content
             store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id, message=user_message)
             db.commit()
             
-            # 3. Retrieve context using RAG (limit to current conversation)
-            context, rag_details = retrieve_context(
-                db,
-                chat_request.content,
-                chat_request.user_id,
-                limit=10,
-                conversation_id=conversation_id,  # Prioritize current conversation
+            log_to_db(db, "INFO", 
+                f"Embedding generated for user message: message_id={user_message.id}",
+                service="minimee_router",
                 request_id=request_id,
-                return_details=True
+                user_id=chat_request.user_id
             )
             
-            # 4. Select appropriate agent
-            agent = select_agent_for_context(db, chat_request.content, chat_request.user_id)
+            # 3. Route to appropriate agent based on agent_name or use leader
+            minimee_agent = None
+            agent_model = None
             
-            # 5. Build prompt
-            if agent:
-                system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
-                if agent.style:
-                    system_prompt += f"\nCommunication style: {agent.style}"
-            else:
-                system_prompt = "You are Minimee, a personal AI assistant."
+            if chat_request.agent_name:
+                log_to_db(db, "INFO", 
+                    f"Routing to agent by name: {chat_request.agent_name}",
+                    service="minimee_router",
+                    request_id=request_id,
+                    user_id=chat_request.user_id
+                )
+                agent_model = get_agent_by_whatsapp_name(db, chat_request.agent_name, chat_request.user_id)
+                if agent_model:
+                    minimee_agent = get_agent_by_whatsapp_name_factory(
+                        whatsapp_name=chat_request.agent_name,
+                        user_id=chat_request.user_id,
+                        db=db,
+                        conversation_id=conversation_id
+                    )
+                    log_to_db(db, "INFO", 
+                        f"Agent found by WhatsApp name: agent_id={agent_model.id}, name={agent_model.name}",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id,
+                        metadata={"agent_id": agent_model.id, "agent_name": agent_model.name}
+                    )
+                else:
+                    log_to_db(db, "WARNING", 
+                        f"Agent not found by WhatsApp name: {chat_request.agent_name}, falling back to leader",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id
+                    )
             
-            full_prompt = build_prompt_with_context(chat_request.content, context, user_style=None)
-            full_prompt = f"{system_prompt}\n\n{full_prompt}"
+            if not minimee_agent:
+                log_to_db(db, "INFO", 
+                    "Using Minimee leader agent",
+                    service="minimee_router",
+                    request_id=request_id,
+                    user_id=chat_request.user_id
+                )
+                minimee_agent = get_minimee_leader_agent(
+                    user_id=chat_request.user_id,
+                    db=db,
+                    conversation_id=conversation_id
+                )
+                if minimee_agent:
+                    agent_model = minimee_agent.agent
+                    log_to_db(db, "INFO", 
+                        f"Leader agent loaded: agent_id={agent_model.id}, name={agent_model.name}",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id,
+                        metadata={"agent_id": agent_model.id, "agent_name": agent_model.name}
+                    )
+                else:
+                    log_to_db(db, "ERROR", 
+                        "No leader agent found and no agent specified. Cannot process request.",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id
+                    )
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'No agent available. Please set a Minimee leader agent.'})}\n\n"
+                    return
             
-            # 6. Get LLM provider info from DB settings
-            from services.llm_router import get_llm_provider_from_db
-            llm_provider, llm_model_from_db = get_llm_provider_from_db(db)
-            llm_model = llm_model_from_db
-            if not llm_model:
-                if llm_provider == "ollama":
-                    llm_model = settings.ollama_model or "llama3.2:1b"
-                elif llm_provider == "vllm":
-                    llm_model = "vLLM (RunPod)"
-                elif llm_provider == "openai":
-                    llm_model = "gpt-4o"
-            
-            # 6. Stream LLM response
-            full_response = ""
-            async for token_data in generate_llm_response_stream(
-                full_prompt,
-                temperature=0.7,
-                max_tokens=512,
-                db=db,
+            # 4. Stream agent response
+            log_to_db(db, "INFO", 
+                f"Invoking agent (streaming): agent_id={agent_model.id}, conversation_id={conversation_id}",
+                service="minimee_router",
                 request_id=request_id,
-                message_id=user_message.id,
-                user_id=chat_request.user_id
+                user_id=chat_request.user_id,
+                metadata={"agent_id": agent_model.id, "conversation_id": conversation_id}
+            )
+            
+            full_response = ""
+            async for token_data in minimee_agent.invoke_stream(
+                user_message=chat_request.content,
+                conversation_id=conversation_id
             ):
                 if "error" in token_data:
-                    yield f"data: {json.dumps({'type': 'error', 'message': token_data['error']})}\n\n"
+                    log_to_db(db, "ERROR", 
+                        f"Agent stream error: {token_data.get('error')}",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id
+                    )
+                    yield f"data: {json.dumps({'type': 'error', 'message': token_data.get('error')})}\n\n"
                     return
                 
                 if not token_data.get("done", False):
                     token = token_data.get("token", "")
-                    full_response += token
-                    yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+                    if token:
+                        full_response += token
+                        yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
                 else:
                     # Response complete
                     final_response = token_data.get("response", full_response)
-                    actions = token_data.get("actions", [])
+                    requires_approval = token_data.get("requires_approval", False)
                     
-                    # 7. Store Minimee response in DB
+                    log_to_db(db, "INFO", 
+                        f"Agent stream complete: response_length={len(final_response)}, requires_approval={requires_approval}",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id,
+                        metadata={
+                            "agent_id": agent_model.id,
+                            "requires_approval": requires_approval,
+                            "response_preview": final_response[:100]
+                        }
+                    )
+                    
+                    # 5. Store Minimee response in DB
                     minimee_message = Message(
                         content=final_response,
-                        sender="Minimee",
+                        sender=agent_model.name if agent_model else "Minimee",
                         timestamp=datetime.utcnow(),
                         source="minimee",
                         conversation_id=conversation_id,
@@ -601,58 +677,45 @@ async def chat_stream(
                     db.commit()
                     db.refresh(minimee_message)
                     
-                    # 8. Generate embedding for Minimee response
+                    log_to_db(db, "INFO", 
+                        f"Minimee response stored: message_id={minimee_message.id}",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id,
+                        metadata={"message_id": minimee_message.id}
+                    )
+                    
+                    # 6. Generate embedding for Minimee response
                     text_with_sender = f"{minimee_message.sender}: {minimee_message.content}" if minimee_message.sender else minimee_message.content
                     store_embedding(db, text_with_sender, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id, message=minimee_message)
                     db.commit()
                     
-                    # 9. Send final event with debug info
-                    yield f"data: {json.dumps({'type': 'done', 'response': final_response, 'actions': actions, 'message_id': minimee_message.id, 'debug': {'llm_provider': llm_provider, 'llm_model': llm_model, 'rag_context': context, 'rag_details': rag_details}})}\n\n"
+                    log_to_db(db, "INFO", 
+                        f"Embedding generated for Minimee response: message_id={minimee_message.id}",
+                        service="minimee_router",
+                        request_id=request_id,
+                        user_id=chat_request.user_id
+                    )
                     
-                    # 10. Sync with WhatsApp Minimee if conversation_id is dashboard-minimee
-                    # Send response via WhatsApp Minimee to user's account (after streaming is complete)
-                    if conversation_id.startswith(f"dashboard-minimee-"):
-                        try:
-                            from services.whatsapp_integration_service import get_user_phone_number
-                            from services.bridge_client import send_message_via_minimee_bridge
-                            
-                            user_phone = get_user_phone_number(db, chat_request.user_id)
-                            if user_phone:
-                                # Format phone number to JID
-                                user_jid = f"{user_phone.replace('+', '').replace(' ', '')}@s.whatsapp.net"
-                                
-                                # Send response via Minimee account to User
-                                # Do this after yield to avoid blocking the stream
-                                try:
-                                    await send_message_via_minimee_bridge(
-                                        recipient=user_jid,
-                                        message_text=final_response,
-                                        source='minimee',  # Use 'minimee' source to match DB entry
-                                        db=db
-                                    )
-                                except Exception as send_error:
-                                    # Log but don't fail - sync is best effort
-                                    log_to_db(
-                                        db,
-                                        "WARNING",
-                                        f"Failed to send response via WhatsApp Minimee: {str(send_error)}",
-                                        service="minimee",
-                                        request_id=request_id
-                                    )
-                        except Exception as sync_error:
-                            # Log error but don't fail the request
-                            log_to_db(
-                                db,
-                                "WARNING",
-                                f"Failed to sync response to WhatsApp Minimee: {str(sync_error)}",
-                                service="minimee",
-                                request_id=request_id
-                            )
+                    # 7. Send final event
+                    yield f"data: {json.dumps({
+                        'type': 'done', 
+                        'response': final_response, 
+                        'message_id': minimee_message.id,
+                        'requires_approval': requires_approval,
+                        'agent_name': agent_model.name if agent_model else 'Minimee'
+                    })}\n\n"
                     
                     break
                     
         except Exception as e:
-            log_to_db(db, "ERROR", f"Chat stream error: {str(e)}", service="minimee", request_id=request_id)
+            log_to_db(db, "ERROR", 
+                f"Chat stream error: {str(e)}, traceback={repr(e)}",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id,
+                metadata={"error_type": type(e).__name__, "error_message": str(e)}
+            )
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     
     return StreamingResponse(
@@ -673,13 +736,20 @@ async def chat_direct(
 ):
     """
     Direct chat endpoint for WhatsApp messages from Minimee TEAM group
-    Returns a direct response without generating approval options
-    Similar to /minimee/chat/stream but synchronous and non-streaming
+    Now uses LangChain MinimeeAgent with intelligent RAG and approval decisions
+    Returns a direct response or requires approval based on agent rules
     """
     request_id = generate_request_id()
-    # Use conversation_id from request if provided (could be dashboard-minimee-{user_id} for sync)
-    # Otherwise default to minimee-team for group messages
     conversation_id = chat_request.conversation_id or f"minimee-team-{chat_request.user_id}"
+    
+    log_to_db(db, "INFO", 
+        f"Chat direct request received: user_id={chat_request.user_id}, conversation_id={conversation_id}, "
+        f"agent_name={chat_request.agent_name}, content_preview={chat_request.content[:100]}",
+        service="minimee_router",
+        request_id=request_id,
+        user_id=chat_request.user_id,
+        metadata={"agent_name": chat_request.agent_name, "source": chat_request.source}
+    )
     
     try:
         # 1. Store user message in DB
@@ -696,76 +766,127 @@ async def chat_direct(
         db.commit()
         db.refresh(user_message)
         
+        log_to_db(db, "INFO", 
+            f"User message stored: message_id={user_message.id}, content_length={len(chat_request.content)}",
+            service="minimee_router",
+            request_id=request_id,
+            user_id=chat_request.user_id,
+            metadata={"message_id": user_message.id}
+        )
+        
         # 2. Generate embedding for user message
         text_with_sender = f"{user_message.sender}: {user_message.content}" if user_message.sender else user_message.content
         store_embedding(db, text_with_sender, message_id=user_message.id, request_id=request_id, user_id=chat_request.user_id, message=user_message)
         db.commit()
         
-        # 3. Retrieve context using RAG (limit to current conversation for better context)
-        context, rag_details = retrieve_context(
-            db,
-            chat_request.content,
-            chat_request.user_id,
-            limit=10,  # Get more context for chat
-            conversation_id=conversation_id,  # Prioritize current conversation
-            request_id=request_id,
-            return_details=True
-        )
-        
-        # Log RAG results for debugging
         log_to_db(db, "INFO", 
-            f"RAG context retrieved: {rag_details.get('results_count', 0)} results, "
-            f"top_similarity: {rag_details.get('top_similarity', 0):.2f}, "
-            f"context_length: {len(context)} chars",
+            f"Embedding generated for user message: message_id={user_message.id}",
             service="minimee_router",
             request_id=request_id,
             user_id=chat_request.user_id
         )
-        if rag_details.get('results'):
-            log_to_db(db, "DEBUG",
-                f"RAG top results: {[{'content': r.get('content', '')[:50], 'similarity': round(r.get('similarity', 0), 2), 'sender': r.get('sender', '')} for r in rag_details['results'][:3]]}",
+        
+        # 3. Route to appropriate agent based on agent_name or use leader
+        minimee_agent = None
+        agent_model = None
+        
+        if chat_request.agent_name:
+            # Route to specific agent by WhatsApp name
+            log_to_db(db, "INFO", 
+                f"Routing to agent by name: {chat_request.agent_name}",
                 service="minimee_router",
                 request_id=request_id,
                 user_id=chat_request.user_id
             )
+            agent_model = get_agent_by_whatsapp_name(db, chat_request.agent_name, chat_request.user_id)
+            if agent_model:
+                minimee_agent = get_agent_by_whatsapp_name_factory(
+                    whatsapp_name=chat_request.agent_name,
+                    user_id=chat_request.user_id,
+                    db=db,
+                    conversation_id=conversation_id
+                )
+                log_to_db(db, "INFO", 
+                    f"Agent found by WhatsApp name: agent_id={agent_model.id}, name={agent_model.name}",
+                    service="minimee_router",
+                    request_id=request_id,
+                    user_id=chat_request.user_id,
+                    metadata={"agent_id": agent_model.id, "agent_name": agent_model.name}
+                )
+            else:
+                log_to_db(db, "WARNING", 
+                    f"Agent not found by WhatsApp name: {chat_request.agent_name}, falling back to leader",
+                    service="minimee_router",
+                    request_id=request_id,
+                    user_id=chat_request.user_id
+                )
         
-        # 4. Select appropriate agent
-        agent = select_agent_for_context(db, chat_request.content, chat_request.user_id)
+        if not minimee_agent:
+            # Use leader agent
+            log_to_db(db, "INFO", 
+                "Using Minimee leader agent",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id
+            )
+            minimee_agent = get_minimee_leader_agent(
+                user_id=chat_request.user_id,
+                db=db,
+                conversation_id=conversation_id
+            )
+            if minimee_agent:
+                agent_model = minimee_agent.agent
+                log_to_db(db, "INFO", 
+                    f"Leader agent loaded: agent_id={agent_model.id}, name={agent_model.name}",
+                    service="minimee_router",
+                    request_id=request_id,
+                    user_id=chat_request.user_id,
+                    metadata={"agent_id": agent_model.id, "agent_name": agent_model.name}
+                )
+            else:
+                log_to_db(db, "ERROR", 
+                    "No leader agent found and no agent specified. Cannot process request.",
+                    service="minimee_router",
+                    request_id=request_id,
+                    user_id=chat_request.user_id
+                )
+                raise HTTPException(status_code=404, detail="No agent available. Please set a Minimee leader agent.")
         
-        # 5. Build prompt
-        if agent:
-            system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
-            if agent.style:
-                system_prompt += f"\nCommunication style: {agent.style}"
-        else:
-            system_prompt = "You are Minimee, a personal AI assistant."
-        
-        full_prompt = build_prompt_with_context(chat_request.content, context, user_style=None)
-        full_prompt = f"{system_prompt}\n\n{full_prompt}"
-        
-        # Log final prompt length for debugging
-        log_to_db(db, "DEBUG",
-            f"Final prompt length: {len(full_prompt)} chars, context included: {bool(context)}",
+        # 4. Invoke agent with user message
+        log_to_db(db, "INFO", 
+            f"Invoking agent: agent_id={agent_model.id}, conversation_id={conversation_id}",
             service="minimee_router",
             request_id=request_id,
-            user_id=chat_request.user_id
+            user_id=chat_request.user_id,
+            metadata={"agent_id": agent_model.id, "conversation_id": conversation_id}
         )
         
-        # 6. Generate LLM response (non-streaming, synchronous)
-        response = await generate_llm_response(
-            full_prompt,
-            temperature=0.7,
-            max_tokens=512,
-            db=db,
+        agent_result = await minimee_agent.invoke(
+            user_message=chat_request.content,
+            conversation_id=conversation_id
+        )
+        
+        response_text = agent_result.get("response", "")
+        requires_approval = agent_result.get("requires_approval", False)
+        options = agent_result.get("options", None)
+        
+        log_to_db(db, "INFO", 
+            f"Agent response generated: response_length={len(response_text)}, requires_approval={requires_approval}, "
+            f"options_count={len(options) if options else 0}",
+            service="minimee_router",
             request_id=request_id,
-            message_id=user_message.id,
-            user_id=chat_request.user_id
+            user_id=chat_request.user_id,
+            metadata={
+                "agent_id": agent_model.id,
+                "requires_approval": requires_approval,
+                "response_preview": response_text[:100]
+            }
         )
         
-        # 7. Store Minimee response in DB
+        # 5. Store Minimee response in DB
         minimee_message = Message(
-            content=response,
-            sender="Minimee",
+            content=response_text,
+            sender=agent_model.name if agent_model else "Minimee",
             timestamp=datetime.utcnow(),
             source="minimee",
             conversation_id=conversation_id,
@@ -775,15 +896,28 @@ async def chat_direct(
         db.commit()
         db.refresh(minimee_message)
         
-        # 8. Generate embedding for Minimee response
+        log_to_db(db, "INFO", 
+            f"Minimee response stored: message_id={minimee_message.id}",
+            service="minimee_router",
+            request_id=request_id,
+            user_id=chat_request.user_id,
+            metadata={"message_id": minimee_message.id}
+        )
+        
+        # 6. Generate embedding for Minimee response
         text_with_sender = f"{minimee_message.sender}: {minimee_message.content}" if minimee_message.sender else minimee_message.content
         store_embedding(db, text_with_sender, message_id=minimee_message.id, request_id=request_id, user_id=chat_request.user_id, message=minimee_message)
         db.commit()
         
-        # 9. Broadcast to WebSocket if source is whatsapp
-        # Special handling for dashboard-minimee conversation_id (sync from WhatsApp to dashboard)
+        log_to_db(db, "INFO", 
+            f"Embedding generated for Minimee response: message_id={minimee_message.id}",
+            service="minimee_router",
+            request_id=request_id,
+            user_id=chat_request.user_id
+        )
+        
+        # 7. Broadcast to WebSocket if source is whatsapp
         if chat_request.source == "whatsapp":
-            # Broadcast user message
             await websocket_manager.broadcast_whatsapp_message({
                 "id": user_message.id,
                 "content": user_message.content,
@@ -793,30 +927,58 @@ async def chat_direct(
                 "conversation_id": user_message.conversation_id,
             })
             
-            # Broadcast Minimee's response
-            # Use "minimee" source to match DB entry and avoid duplicates
             await websocket_manager.broadcast_whatsapp_message({
                 "id": minimee_message.id,
                 "content": minimee_message.content,
-                "sender": "Minimee",
+                "sender": agent_model.name if agent_model else "Minimee",
                 "timestamp": minimee_message.timestamp.isoformat(),
-                "source": "minimee",  # Use "minimee" source to match DB and avoid duplicates
+                "source": "minimee",
                 "conversation_id": minimee_message.conversation_id,
             })
+            
+            log_to_db(db, "INFO", 
+                f"Messages broadcasted via WebSocket: user_message_id={user_message.id}, minimee_message_id={minimee_message.id}",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id
+            )
         
-        # Note: Response sending to WhatsApp is now handled directly by the bridge
-        # when it receives the chatResponse from this endpoint.
-        # The bridge will send the response via sockMinimee to the user's WhatsApp.
-        # We no longer try to send from here to avoid dependency on whatsapp_integrations table.
-        
-        return {
-            "response": response,
+        # 8. Return response with approval info
+        result = {
+            "response": response_text,
             "message_id": minimee_message.id,
-            "conversation_id": conversation_id
+            "conversation_id": conversation_id,
+            "requires_approval": requires_approval
         }
         
+        if requires_approval and options:
+            result["options"] = options
+            log_to_db(db, "INFO", 
+                f"Response requires approval: {len(options)} options provided",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id
+            )
+        else:
+            log_to_db(db, "INFO", 
+                "Response auto-approved, no approval required",
+                service="minimee_router",
+                request_id=request_id,
+                user_id=chat_request.user_id
+            )
+        
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        log_to_db(db, "ERROR", f"Direct chat error: {str(e)}", service="minimee", request_id=request_id)
+        log_to_db(db, "ERROR", 
+            f"Direct chat error: {str(e)}, traceback={repr(e)}",
+            service="minimee_router",
+            request_id=request_id,
+            user_id=chat_request.user_id,
+            metadata={"error_type": type(e).__name__, "error_message": str(e)}
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -850,6 +1012,79 @@ async def get_conversation_messages(
     except Exception as e:
         log_to_db(db, "ERROR", f"Error fetching conversation messages: {str(e)}", service="minimee")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/minimee/conversations/{conversation_id}/messages")
+async def delete_conversation_messages(
+    conversation_id: str,
+    user_id: int = Query(1, description="User ID"),  # TODO: Get from auth
+    db: Session = Depends(get_db)
+):
+    """
+    Delete all messages from a conversation
+    Also deletes associated embeddings and action_logs
+    Returns count of deleted messages
+    """
+    from models import Embedding, ActionLog
+    
+    try:
+        # Get message IDs before deletion
+        messages = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.user_id == user_id
+        ).all()
+        
+        message_ids = [msg.id for msg in messages]
+        message_count = len(message_ids)
+        
+        if message_count == 0:
+            return {
+                "deleted": 0,
+                "message": "No messages found for this conversation"
+            }
+        
+        # Delete in correct order to avoid foreign key violations:
+        # 1. ActionLogs (reference messages)
+        action_logs_count = 0
+        if message_ids:
+            action_logs_count = db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
+        
+        # 2. Embeddings (reference messages)
+        embeddings_count = 0
+        if message_ids:
+            embeddings_count = db.query(Embedding).filter(Embedding.message_id.in_(message_ids)).delete(synchronize_session=False)
+        
+        # 3. Messages (last, after all dependencies are removed)
+        deleted_count = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.user_id == user_id
+        ).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        log_to_db(
+            db,
+            "INFO",
+            f"Deleted {deleted_count} messages from conversation {conversation_id}",
+            service="minimee",
+            metadata={
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "deleted_count": deleted_count,
+                "action_logs_count": action_logs_count,
+                "embeddings_count": embeddings_count
+            }
+        )
+        
+        return {
+            "deleted": deleted_count,
+            "message": f"Successfully deleted {deleted_count} message(s), {embeddings_count} embedding(s), and {action_logs_count} action log(s)"
+        }
+    
+    except Exception as e:
+        db.rollback()
+        log_to_db(db, "ERROR", f"Error deleting conversation messages: {str(e)}", service="minimee")
+        raise HTTPException(status_code=500, detail=f"Error deleting conversation messages: {str(e)}")
 
 
 @router.websocket("/minimee/ws")

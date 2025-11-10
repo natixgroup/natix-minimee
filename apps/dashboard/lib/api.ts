@@ -13,6 +13,10 @@ export interface Agent {
   style: string | null;
   enabled: boolean;
   user_id: number;
+  is_minimee_leader: boolean;
+  whatsapp_integration_id: number | null;
+  whatsapp_display_name: string | null;
+  approval_rules: Record<string, any> | null;
   created_at: string;
   updated_at: string;
 }
@@ -167,6 +171,8 @@ class ApiClient {
     style?: string;
     enabled?: boolean;
     user_id: number;
+    whatsapp_display_name?: string;
+    approval_rules?: Record<string, any>;
   }) {
     return this.request<Agent>("/agents", {
       method: "POST",
@@ -184,6 +190,17 @@ class ApiClient {
   async deleteAgent(id: number) {
     return this.request<{ message: string }>(`/agents/${id}`, {
       method: "DELETE",
+    });
+  }
+
+  // Minimee Leader Agent
+  async getMinimeeLeader(userId: number) {
+    return this.request<Agent>(`/agents/leader?user_id=${userId}`);
+  }
+
+  async setMinimeeLeader(agentId: number, userId: number) {
+    return this.request<Agent>(`/agents/${agentId}/set-leader?user_id=${userId}`, {
+      method: "POST",
     });
   }
 
@@ -269,6 +286,30 @@ class ApiClient {
       limit: number;
       total_pages: number;
     }>(`/logs${query ? `?${query}` : ""}`);
+  }
+
+  // Delete logs
+  async deleteLogs(params?: {
+    level?: string;
+    service?: string;
+    start_date?: string;
+    end_date?: string;
+  }) {
+    const queryParams = new URLSearchParams();
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== "") {
+          queryParams.append(key, String(value));
+        }
+      });
+    }
+    const query = queryParams.toString();
+    return this.request<{ deleted: number; message: string }>(
+      `/logs${query ? `?${query}` : ""}`,
+      {
+        method: "DELETE",
+      }
+    );
   }
 
   // Action Logs
@@ -933,6 +974,16 @@ class ApiClient {
       source: string;
       conversation_id: string | null;
     }>>(`/minimee/conversations/${conversationId}/messages?user_id=${userId}`);
+  }
+
+  // Delete conversation messages
+  async deleteConversationMessages(conversationId: string, userId: number = 1) {
+    return this.request<{ deleted: number; message: string }>(
+      `/minimee/conversations/${conversationId}/messages?user_id=${userId}`,
+      {
+        method: "DELETE",
+      }
+    );
   }
 
   // Embeddings

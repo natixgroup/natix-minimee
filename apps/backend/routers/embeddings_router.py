@@ -247,7 +247,7 @@ async def delete_embeddings(
     from services.logs_service import log_to_db
     
     try:
-        # Build query with same filters
+        # Build query with same filters (this includes joins)
         query = _build_embedding_query(
             db=db,
             source=source,
@@ -267,8 +267,11 @@ async def delete_embeddings(
                 "message": "No embeddings found matching the filters"
             }
         
-        # Delete embeddings
-        deleted_count = query.delete(synchronize_session=False)
+        # Get IDs of embeddings to delete (can't call delete() on joined query)
+        embedding_ids = [e.id for e in query.with_entities(Embedding.id).all()]
+        
+        # Delete embeddings using a simple query without joins
+        deleted_count = db.query(Embedding).filter(Embedding.id.in_(embedding_ids)).delete(synchronize_session=False)
         db.commit()
         
         log_to_db(

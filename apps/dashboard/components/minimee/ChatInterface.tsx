@@ -7,13 +7,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Send, Loader2, MessageSquare, Info } from "lucide-react";
+import { Send, Loader2, MessageSquare, Info, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useChatStream } from "@/lib/hooks/useChatStream";
 import { useConversationHistory, type ChatMessage } from "@/lib/hooks/useConversationHistory";
 import { useWhatsAppMessages } from "@/lib/hooks/useWhatsAppMessages";
 import { ApprovalDialog, type MessageOptions } from "./ApprovalDialog";
 import { DebugModal } from "./DebugModal";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { api } from "@/lib/api";
 
 interface ChatInterfaceProps {
   userId: number;
@@ -30,16 +39,38 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
   const [showApprovalDialog, setShowApprovalDialog] = useState(false);
   const [debugInfos, setDebugInfos] = useState<Map<number, any>>(new Map());
   const [selectedDebugMessageId, setSelectedDebugMessageId] = useState<number | null>(null);
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { sendMessage, isStreaming } = useChatStream();
   
-  const { data: historyData, isLoading: isLoadingHistory } = useConversationHistory(
+  const { data: historyData, isLoading: isLoadingHistory, refetch: refetchHistory } = useConversationHistory(
     conversationId,
     userId,
     true
   );
+  
+  // Handler for purging conversation
+  const handlePurge = async () => {
+    setIsPurging(true);
+    try {
+      const result = await api.deleteConversationMessages(conversationId, userId);
+      toast.success(result.message || `${result.deleted} message(s) supprimé(s)`);
+      setShowPurgeConfirm(false);
+      setMessages([]);
+      setStreamingMessage("");
+      // Refetch history to ensure UI is updated
+      await refetchHistory();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Erreur lors de la suppression"
+      );
+    } finally {
+      setIsPurging(false);
+    }
+  };
 
   // Load history when available
   useEffect(() => {
@@ -187,15 +218,27 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
               <MessageSquare className="h-5 w-5" />
               Chat Minimee
             </CardTitle>
-            <div className="flex items-center gap-2">
-              <Label htmlFor="whatsapp-toggle" className="text-sm">
-                Afficher WhatsApp
-              </Label>
-              <Switch
-                id="whatsapp-toggle"
-                checked={showWhatsApp}
-                onCheckedChange={setShowWhatsApp}
-              />
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="whatsapp-toggle" className="text-sm">
+                  Afficher WhatsApp
+                </Label>
+                <Switch
+                  id="whatsapp-toggle"
+                  checked={showWhatsApp}
+                  onCheckedChange={setShowWhatsApp}
+                />
+              </div>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowPurgeConfirm(true)}
+                disabled={isPurging || messages.length === 0}
+                className="flex items-center gap-2"
+              >
+                <Trash2 className="h-4 w-4" />
+                Purger
+              </Button>
             </div>
           </div>
         </CardHeader>
@@ -326,6 +369,48 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
         }}
         debugInfo={selectedDebugMessageId ? debugInfos.get(selectedDebugMessageId) || null : null}
       />
+
+      {/* Purge confirmation dialog */}
+      <Dialog open={showPurgeConfirm} onOpenChange={setShowPurgeConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmer la suppression</DialogTitle>
+            <DialogDescription>
+              Vous êtes sur le point de supprimer <strong>{messages.length} message(s)</strong> de cette conversation.
+              <br />
+              <br />
+              Cette action est <strong className="text-destructive">irréversible</strong> et supprimera également les embeddings associés.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 mt-4">
+            <Button
+              variant="outline"
+              onClick={() => setShowPurgeConfirm(false)}
+              disabled={isPurging}
+            >
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handlePurge}
+              disabled={isPurging}
+              className="flex items-center gap-2"
+            >
+              {isPurging ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Suppression...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4" />
+                  Supprimer {messages.length} message(s)
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
