@@ -3,7 +3,7 @@ Core Minimee messaging endpoints
 """
 import json
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -71,6 +71,7 @@ async def display_message_only(
 @router.post("/minimee/message", response_model=MessageOptions)
 async def process_message(
     message_data: MessageCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """
@@ -129,6 +130,10 @@ async def process_message(
         text_with_sender = f"{message.sender}: {message.content}" if message.sender else message.content
         store_embedding(db, text_with_sender, message_id=message.id, request_id=request_id, user_id=message_data.user_id, message=message)
         db.commit()  # Commit embedding before generating options
+        
+        # 2b. Schedule real-time chunking in background (groups with recent messages)
+        from services.realtime_chunking import schedule_realtime_chunking
+        schedule_realtime_chunking(background_tasks, db, message, message_data.user_id)
         
         # 3-7. Generate response options (sera loggé dans approval_flow.py et rag.py)
         options = await generate_response_options(db, message, request_id=request_id)
@@ -554,6 +559,9 @@ async def chat_stream(
             )
             
             # 3. Route to appropriate agent based on agent_name or use leader
+            # Extract included_sources from request
+            included_sources = chat_request.included_sources if hasattr(chat_request, 'included_sources') else None
+            
             minimee_agent = None
             agent_model = None
             
@@ -570,7 +578,8 @@ async def chat_stream(
                         whatsapp_name=chat_request.agent_name,
                         user_id=chat_request.user_id,
                         db=db,
-                        conversation_id=conversation_id
+                        conversation_id=conversation_id,
+                        included_sources=included_sources
                     )
                     log_to_db(db, "INFO", 
                         f"Agent found by WhatsApp name: agent_id={agent_model.id}, name={agent_model.name}",
@@ -597,7 +606,8 @@ async def chat_stream(
                 minimee_agent = get_minimee_leader_agent(
                     user_id=chat_request.user_id,
                     db=db,
-                    conversation_id=conversation_id
+                    conversation_id=conversation_id,
+                    included_sources=included_sources
                 )
                 if minimee_agent:
                     agent_model = minimee_agent.agent
@@ -697,13 +707,16 @@ async def chat_stream(
                         user_id=chat_request.user_id
                     )
                     
-                    # 7. Send final event
+                    # 7. Send final event with debug info including active sources
                     final_data = {
                         'type': 'done', 
                         'response': final_response, 
                         'message_id': minimee_message.id,
                         'requires_approval': requires_approval,
-                        'agent_name': agent_model.name if agent_model else 'Minimee'
+                        'agent_name': agent_model.name if agent_model else 'Minimee',
+                        'debug': {
+                            'included_sources': included_sources  # Include active sources in debug info
+                        }
                     }
                     yield f"data: {json.dumps(final_data)}\n\n"
                     
@@ -788,6 +801,9 @@ async def chat_direct(
         )
         
         # 3. Route to appropriate agent based on agent_name or use leader
+        # Extract included_sources from request
+        included_sources = chat_request.included_sources if hasattr(chat_request, 'included_sources') else None
+        
         minimee_agent = None
         agent_model = None
         
@@ -805,7 +821,8 @@ async def chat_direct(
                     whatsapp_name=chat_request.agent_name,
                     user_id=chat_request.user_id,
                     db=db,
-                    conversation_id=conversation_id
+                    conversation_id=conversation_id,
+                    included_sources=included_sources
                 )
                 log_to_db(db, "INFO", 
                     f"Agent found by WhatsApp name: agent_id={agent_model.id}, name={agent_model.name}",
@@ -833,7 +850,8 @@ async def chat_direct(
             minimee_agent = get_minimee_leader_agent(
                 user_id=chat_request.user_id,
                 db=db,
-                conversation_id=conversation_id
+                conversation_id=conversation_id,
+                included_sources=included_sources
             )
             if minimee_agent:
                 # Use stored attributes instead of agent model to avoid detached instance errors

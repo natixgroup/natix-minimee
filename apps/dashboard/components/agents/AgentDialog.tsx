@@ -20,6 +20,8 @@ import {
   useUpdateAgent,
 } from "@/lib/hooks/useAgents";
 import { type Agent } from "@/lib/api";
+import { AgentAvatarUpload } from "./AgentAvatarUpload";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 interface AgentFormData {
   name: string;
@@ -42,6 +44,7 @@ export function AgentDialog({
   onOpenChange,
   agent,
 }: AgentDialogProps) {
+  const { user } = useAuth();
   const createAgent = useCreateAgent();
   const updateAgent = useUpdateAgent();
   const {
@@ -102,10 +105,13 @@ export function AgentDialog({
         }
       );
     } else {
+      if (!user) {
+        return;
+      }
       createAgent.mutate(
         {
           ...data,
-          user_id: 1, // TODO: Get from auth
+          user_id: user.id,
         },
         {
           onSuccess: () => {
@@ -128,6 +134,19 @@ export function AgentDialog({
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)}>
           <div className="space-y-4 py-4">
+            <AgentAvatarUpload
+              agent={agent}
+              onUploadComplete={(avatarUrl) => {
+                if (agent) {
+                  // Update agent with new avatar URL
+                  updateAgent.mutate({
+                    id: agent.id,
+                    data: { ...agent, avatar_url: avatarUrl },
+                  });
+                }
+              }}
+            />
+
             <div className="space-y-2">
               <Label htmlFor="name">Name</Label>
               <Input

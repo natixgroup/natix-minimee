@@ -48,3 +48,4 @@ def downgrade() -> None:
     op.drop_index('ix_ingestion_jobs_user_id', table_name='ingestion_jobs')
     op.drop_table('ingestion_jobs')
 
+

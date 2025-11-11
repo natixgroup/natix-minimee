@@ -10,6 +10,7 @@ import { Upload, CheckCircle2, Loader2, AlertCircle, FileText } from "lucide-rea
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { ContactFormDialog } from "./ContactFormDialog";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 export function WhatsAppUpload() {
   const queryClient = useQueryClient();
@@ -24,7 +25,8 @@ export function WhatsAppUpload() {
   const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const userId = 1; // TODO: Get from auth
+  const { user } = useAuth();
+  const userId = user?.id;
 
   const validateAndSetFile = (selectedFile: File | null) => {
     if (!selectedFile) {

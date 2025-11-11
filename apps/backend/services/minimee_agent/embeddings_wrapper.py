@@ -38,3 +38,4 @@ class MinimeeEmbeddings(Embeddings):
         return generate_embedding(text)
 
 
+

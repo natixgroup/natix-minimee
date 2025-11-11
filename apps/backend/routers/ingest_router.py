@@ -680,6 +680,25 @@ async def save_contact(
         return contact
 
 
+@router.get("/ingest/contacts", response_model=List[ContactResponse])
+async def get_all_contacts(
+    user_id: int = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all contacts for a user
+    """
+    from sqlalchemy.orm import joinedload
+    
+    contacts = db.query(Contact).options(
+        joinedload(Contact.relation_types)
+    ).filter(
+        Contact.user_id == user_id
+    ).order_by(Contact.first_name, Contact.created_at).all()
+    
+    return contacts
+
+
 @router.get("/ingest/contacts/{conversation_id}", response_model=ContactResponse)
 async def get_contact(
     conversation_id: str,
@@ -946,11 +965,13 @@ async def delete_ingestion_job(
                 ).all()
                 message_ids = [msg.id for msg in messages]
                 
+                deleted_embeddings = 0
+                
                 if message_ids:
                     # Delete ActionLogs
                     db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
                     
-                    # Delete embeddings
+                    # Delete embeddings linked to messages
                     deleted_embeddings = db.query(Embedding).filter(
                         Embedding.message_id.in_(message_ids)
                     ).delete(synchronize_session=False)
@@ -958,6 +979,22 @@ async def delete_ingestion_job(
                     # Delete messages
                     deleted_messages = db.query(Message).filter(
                         Message.id.in_(message_ids)
+                    ).delete(synchronize_session=False)
+                
+                # Also delete any chunk embeddings that reference Gmail conversation_ids in metadata
+                # These are embeddings created from chunks that might not have a direct message_id
+                thread_id_strs = [str(tid) for tid in thread_ids]
+                chunk_embeddings_query = db.query(Embedding).filter(
+                    Embedding.message_id.is_(None),
+                    Embedding.metadata['source'].astext == 'gmail',
+                    Embedding.metadata['conversation_id'].astext.in_(thread_id_strs)
+                )
+                chunk_embeddings = chunk_embeddings_query.all()
+                
+                if chunk_embeddings:
+                    chunk_embedding_ids = [e.id for e in chunk_embeddings]
+                    deleted_embeddings += db.query(Embedding).filter(
+                        Embedding.id.in_(chunk_embedding_ids)
                     ).delete(synchronize_session=False)
                 
                 # Delete Gmail threads
@@ -1067,6 +1104,8 @@ async def delete_all_ingestion_jobs(
             ).all()
             message_ids = [msg.id for msg in messages]
             
+            total_deleted_embeddings = 0
+            
             if message_ids:
                 db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
                 total_deleted_embeddings = db.query(Embedding).filter(
@@ -1075,10 +1114,26 @@ async def delete_all_ingestion_jobs(
                 total_deleted_messages = db.query(Message).filter(
                     Message.id.in_(message_ids)
                 ).delete(synchronize_session=False)
-                total_deleted_threads = db.query(GmailThread).filter(
-                    GmailThread.id.in_(thread_ids),
-                    GmailThread.user_id == user_id
+            
+            # Also delete any chunk embeddings that reference Gmail conversation_ids in metadata
+            thread_id_strs = [str(tid) for tid in thread_ids]
+            chunk_embeddings_query = db.query(Embedding).filter(
+                Embedding.message_id.is_(None),
+                Embedding.metadata['source'].astext == 'gmail',
+                Embedding.metadata['conversation_id'].astext.in_(thread_id_strs)
+            )
+            chunk_embeddings = chunk_embeddings_query.all()
+            
+            if chunk_embeddings:
+                chunk_embedding_ids = [e.id for e in chunk_embeddings]
+                total_deleted_embeddings += db.query(Embedding).filter(
+                    Embedding.id.in_(chunk_embedding_ids)
                 ).delete(synchronize_session=False)
+            
+            total_deleted_threads = db.query(GmailThread).filter(
+                GmailThread.id.in_(thread_ids),
+                GmailThread.user_id == user_id
+            ).delete(synchronize_session=False)
         
         # Delete all jobs
         deleted_jobs_count = db.query(IngestionJob).filter(

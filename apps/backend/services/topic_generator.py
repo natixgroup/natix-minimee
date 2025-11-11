@@ -149,3 +149,4 @@ def generate_latent_topic_sync(
             generate_latent_topic(block_text, db, user_id, job_id, llm_log_callback)
         )
 
+

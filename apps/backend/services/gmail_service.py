@@ -487,6 +487,36 @@ def fetch_gmail_threads_sync(
                             "status": "completed"
                         }
                     })
+                    
+                    # Auto-classify contact after indexing
+                    try:
+                        from services.contact_classifier import auto_classify_and_notify
+                        classification_result = auto_classify_and_notify(
+                            db=db,
+                            user_id=user_id,
+                            conversation_id=thread_id,
+                            source='gmail',
+                            confidence_threshold=0.7
+                        )
+                        if classification_result and classification_result.get('needs_validation'):
+                            # Classification needs user validation - could emit notification here
+                            log_to_db(
+                                db,
+                                "INFO",
+                                f"Contact classification suggested for thread {thread_id}: {classification_result.get('suggested_category_label')}",
+                                service="gmail_service",
+                                user_id=user_id,
+                                metadata={"thread_id": thread_id, "classification": classification_result}
+                            )
+                    except Exception as class_e:
+                        # Don't fail indexing if classification fails
+                        log_to_db(
+                            db,
+                            "WARNING",
+                            f"Failed to classify contact for thread {thread_id}: {str(class_e)}",
+                            service="gmail_service",
+                            user_id=user_id
+                        )
                 except Exception as e:
                     log_to_db(db, "ERROR", f"Failed to index thread {thread_id}: {str(e)}", service="gmail_service")
                     _emit_progress("indexing", {

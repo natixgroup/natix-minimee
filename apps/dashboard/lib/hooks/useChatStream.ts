@@ -12,7 +12,8 @@ export function useChatStream() {
       userId: number,
       conversationId: string,
       onToken: (token: string) => void,
-      onComplete: (response: string, actions: any[], debugInfo?: any) => void
+      onComplete: (response: string, actions: any[], debugInfo?: any) => void,
+      includedSources?: string[]
     ) => {
       setIsStreaming(true);
       setError(null);
@@ -22,6 +23,7 @@ export function useChatStream() {
           content,
           userId,
           conversationId,
+          includedSources,
           (token) => {
             onToken(token);
           },

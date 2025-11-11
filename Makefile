@@ -1,4 +1,4 @@
-.PHONY: help up down logs clean build restart test lint seed backup restore
+.PHONY: help up down logs clean build restart test lint seed backup restore install-ollama-models
 
 # Default target
 help:
@@ -16,6 +16,7 @@ help:
 	@echo "  make seed     - Seed database with default data"
 	@echo "  make backup   - Create database backup"
 	@echo "  make restore  - Restore database from backup (requires FILE=path)"
+	@echo "  make install-ollama-models - Install recommended Ollama models"
 	@echo "  make help     - Show this help message"
 
 # Start all services
@@ -82,4 +83,8 @@ restore:
 	fi
 	@echo "Restoring database from $(FILE)..."
 	bash scripts/restore_db.sh $(FILE)
+
+# Install recommended Ollama models
+install-ollama-models:
+	@bash scripts/install_ollama_models.sh
 

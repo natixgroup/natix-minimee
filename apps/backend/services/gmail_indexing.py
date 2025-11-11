@@ -9,11 +9,10 @@ from email.header import decode_header
 from sqlalchemy.orm import Session
 from typing import List, Dict, Optional, Callable
 from datetime import datetime
-from models import Message, Embedding, Summary
+from models import Message, Embedding
 from services.embeddings import store_embedding
 from services.language_detector import detect_language
-from services.chunking import create_chunks
-from services.summarizer import generate_summaries_sync
+from services.conversational_chunking import create_conversational_blocks
 from services.logs_service import log_to_db
 
 
@@ -87,7 +86,6 @@ def index_gmail_thread(
         'messages_indexed': 0,
         'chunks_created': 0,
         'embeddings_created': 0,
-        'summaries_created': 0,
     }
     
     def _emit_progress(step: str, data: Dict):
@@ -200,186 +198,94 @@ def index_gmail_thread(
                 }
             })
         
-        # Create chunks (3-5 emails per chunk)
-        chunks = create_chunks(parsed_messages, min_chunk_size=3, max_chunk_size=5)
-        stats['chunks_created'] = len(chunks)
+        # Create conversational blocks (temporal/logical grouping)
+        blocks = create_conversational_blocks(
+            parsed_messages,
+            time_window_minutes=20,
+            silence_threshold_hours=1.0
+        )
+        stats['chunks_created'] = len(blocks)
         
-        # Update chunks with message IDs
-        for chunk in chunks:
-            chunk['message_ids'] = [
+        # Update blocks with message IDs
+        for block in blocks:
+            block['message_ids'] = [
                 message_records[idx]['db_message'].id 
-                for idx in chunk['messages']
+                for idx in block['messages']
             ]
         
-        # Generate summaries for chunks
-        import time
-        summary_start_time = time.time()
+        # Generate embeddings for conversational blocks (no summaries for now - can be added later if needed)
+        blocks_with_embeddings = blocks
+        
+        # Store embeddings for blocks
         _emit_progress("indexing", {
             "step": "indexing",
-            "message": f"Generating summaries for {len(chunks)} chunks...",
+            "message": f"Generating embeddings for {len(blocks_with_embeddings)} conversational blocks...",
             "indexing_log": {
                 "thread_id": thread_id,
-                "chunks_count": len(chunks),
-                "status": "summarizing",
-                "start_time": summary_start_time
-            }
-        })
-        log_to_db(db, "INFO", f"Generating summaries for {len(chunks)} chunks in thread {thread_id}...", service="gmail_indexing")
-        
-        # Track summary progress with timer
-        def summary_progress_callback(current: int, total: int):
-            elapsed = time.time() - summary_start_time
-            _emit_progress("indexing", {
-                "step": "indexing",
-                "message": f"Generating summaries for {len(chunks)} chunks... ({current}/{total})",
-                "indexing_log": {
-                    "thread_id": thread_id,
-                    "chunks_count": len(chunks),
-                    "current_summary": current,
-                    "total_summaries": total,
-                    "elapsed_seconds": int(elapsed),
-                    "status": "summarizing"
-                }
-            })
-        
-        try:
-            chunks_with_summaries = generate_summaries_sync(chunks, db, progress_callback=summary_progress_callback)
-            stats['summaries_created'] = len(chunks_with_summaries)
-            log_to_db(db, "INFO", f"Generated {len(chunks_with_summaries)} summaries for thread {thread_id}", service="gmail_indexing")
-            _emit_progress("indexing", {
-                "step": "indexing",
-                "message": f"Generated {len(chunks_with_summaries)} summaries",
-                "indexing_log": {
-                    "thread_id": thread_id,
-                    "summaries_count": len(chunks_with_summaries),
-                    "status": "summaries_complete"
-                }
-            })
-        except Exception as e:
-            log_to_db(db, "ERROR", f"Failed to generate summaries for thread {thread_id}: {str(e)}", service="gmail_indexing")
-            # Continue without summaries - embeddings are more important
-            chunks_with_summaries = chunks
-            stats['summaries_created'] = 0
-            _emit_progress("indexing", {
-                "step": "indexing",
-                "message": f"Summary generation failed, continuing without summaries",
-                "indexing_log": {
-                    "thread_id": thread_id,
-                    "status": "summaries_skipped",
-                    "error": str(e)[:100]  # Truncate error message
-                }
-            })
-        
-        # Store summaries and generate embeddings
-        _emit_progress("indexing", {
-            "step": "indexing",
-            "message": f"Generating embeddings for {len(chunks_with_summaries)} chunks...",
-            "indexing_log": {
-                "thread_id": thread_id,
-                "chunks_count": len(chunks_with_summaries),
+                "blocks_count": len(blocks_with_embeddings),
                 "status": "embedding"
             }
         })
-        log_to_db(db, "INFO", f"Generating embeddings for {len(chunks_with_summaries)} chunks in thread {thread_id}...", service="gmail_indexing")
-        for chunk_idx, chunk in enumerate(chunks_with_summaries):
-            # Emit progress for each chunk
+        log_to_db(db, "INFO", f"Generating embeddings for {len(blocks_with_embeddings)} conversational blocks in thread {thread_id}...", service="gmail_indexing")
+        for block_idx, block in enumerate(blocks_with_embeddings):
+            # Emit progress for each block
             _emit_progress("indexing", {
                 "step": "indexing",
-                "message": f"Embedding chunk {chunk_idx + 1}/{len(chunks_with_summaries)}...",
+                "message": f"Embedding block {block_idx + 1}/{len(blocks_with_embeddings)}...",
                 "indexing_log": {
                     "thread_id": thread_id,
-                    "chunk_index": chunk_idx + 1,
-                    "total_chunks": len(chunks_with_summaries),
-                    "message_count": chunk.get('message_count', 0),
-                    "status": "embedding_chunk"
+                    "block_index": block_idx + 1,
+                    "total_blocks": len(blocks_with_embeddings),
+                    "message_count": block.get('message_count', 0),
+                    "status": "embedding_block"
                 }
             })
-            if chunk_idx % 5 == 0:  # Log every 5 chunks
-                log_to_db(db, "INFO", f"Processing chunk {chunk_idx + 1}/{len(chunks_with_summaries)} for thread {thread_id}...", service="gmail_indexing")
-            # Store summary in DB
-            summary = Summary(
-                conversation_id=thread_id,
-                summary_text=f"TL;DR: {chunk.get('summary', '')}\nTags: {chunk.get('tags', '')}"
-            )
-            db.add(summary)
-            db.flush()
+            if block_idx % 5 == 0:  # Log every 5 blocks
+                log_to_db(db, "INFO", f"Processing block {block_idx + 1}/{len(blocks_with_embeddings)} for thread {thread_id}...", service="gmail_indexing")
             
-            # Generate embedding for chunk
-            chunk_language = detect_language(chunk['text'])
+            # Generate embedding for conversational block
+            block_language = detect_language(block['text'])
+            
+            # Build standardized metadata
             metadata = {
                 'chunk': True,
-                'language': chunk_language,
-                'message_count': chunk['message_count'],
-                'senders': chunk['senders'],
-                'tags': chunk.get('tags', ''),
+                'language': block_language,
+                'message_count': block['message_count'],
+                'participants': block.get('participants', []),
                 'source': 'gmail',
                 'thread_id': thread_id,
                 'conversation_id': thread_id,  # For Gmail, conversation_id = thread_id
+                'start_timestamp': block.get('start_timestamp').isoformat() if block.get('start_timestamp') else None,
+                'end_timestamp': block.get('end_timestamp').isoformat() if block.get('end_timestamp') else None,
+                'duration_minutes': block.get('duration_minutes'),
+                'user_id': user_id,
             }
             
             embedding = store_embedding(
                 db,
-                chunk['text'],
+                block['text'],
                 message_id=None,
-                metadata=metadata
+                metadata=metadata,
+                user_id=user_id
             )
             db.flush()
             stats['embeddings_created'] += 1
             
-            # Emit progress for chunk embedding completion
+            # Emit progress for block embedding completion
             _emit_progress("indexing", {
                 "step": "indexing",
-                "message": f"Chunk {chunk_idx + 1}/{len(chunks_with_summaries)} embedded",
+                "message": f"Block {block_idx + 1}/{len(blocks_with_embeddings)} embedded",
                 "indexing_log": {
                     "thread_id": thread_id,
-                    "chunk_index": chunk_idx + 1,
-                    "total_chunks": len(chunks_with_summaries),
+                    "block_index": block_idx + 1,
+                    "total_blocks": len(blocks_with_embeddings),
                     "embeddings_created": stats['embeddings_created'],
-                    "status": "chunk_embedded"
+                    "status": "block_embedded"
                 }
             })
             
-            # Create embeddings for individual messages (for backward compatibility)
-            # Include sender in text for better RAG search
-            chunk_message_ids = chunk.get('message_ids', [])
-            for msg_idx_in_chunk, msg_record in enumerate(message_records):
-                if msg_record['db_message'].id in chunk_message_ids:
-                    parsed = msg_record['parsed']
-                    sender = msg_record['db_message'].sender
-                    content = parsed.get('content', '')
-                    
-                    # Include sender in text for better semantic search
-                    text_with_sender = f"{sender}: {content}" if sender else content
-                    
-                    msg_metadata = {
-                        'language': msg_record['language'],
-                        'chunk_id': embedding.id,
-                        'source': 'gmail',
-                        'thread_id': thread_id,
-                        'subject': parsed.get('subject', ''),
-                    }
-                    store_embedding(
-                        db,
-                        text_with_sender,  # Include sender in vectorized text
-                        message_id=msg_record['db_message'].id,
-                        metadata=msg_metadata
-                    )
-                    db.flush()
-                    stats['embeddings_created'] += 1
-                    
-                    # Emit progress for message embedding (every 3rd message to avoid spam)
-                    if msg_idx_in_chunk % 3 == 0:
-                        _emit_progress("indexing", {
-                            "step": "indexing",
-                            "message": f"Embedding messages in chunk {chunk_idx + 1}...",
-                            "indexing_log": {
-                                "thread_id": thread_id,
-                                "chunk_index": chunk_idx + 1,
-                                "message_in_chunk": msg_idx_in_chunk + 1,
-                                "sender": sender[:50] if sender else "unknown",
-                                "status": "embedding_message"
-                            }
-                        })
+            # NOTE: We no longer create individual message embeddings to avoid redundancy
+            # The conversational blocks contain all the context needed for RAG
         
         db.commit()
         

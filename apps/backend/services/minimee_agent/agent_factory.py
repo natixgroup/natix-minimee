@@ -2,7 +2,7 @@
 Factory for creating and caching MinimeeAgent instances
 Singleton pattern with cache per agent_id
 """
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from langchain_core.language_models import BaseLanguageModel
 from models import Agent
@@ -21,7 +21,8 @@ def get_or_create_agent(
     user_id: int,
     llm: Optional[BaseLanguageModel] = None,
     conversation_id: Optional[str] = None,
-    force_recreate: bool = False
+    force_recreate: bool = False,
+    included_sources: Optional[List[str]] = None
 ) -> MinimeeAgent:
     """
     Get or create MinimeeAgent instance (cached singleton per agent_id)
@@ -33,6 +34,7 @@ def get_or_create_agent(
         llm: Optional LangChain LLM (will create if not provided)
         conversation_id: Optional conversation ID
         force_recreate: Force recreation even if cached
+        included_sources: List of sources to include in RAG context (whatsapp, gmail). If None or empty, all sources included.
     
     Returns:
         MinimeeAgent instance
@@ -68,7 +70,8 @@ def get_or_create_agent(
         db=db,
         user_id=user_id,
         llm=llm,
-        conversation_id=conversation_id
+        conversation_id=conversation_id,
+        included_sources=included_sources
     )
     
     # Cache it
@@ -82,7 +85,8 @@ def get_minimee_leader_agent(
     db: Session,
     llm: Optional[BaseLanguageModel] = None,
     conversation_id: Optional[str] = None,
-    force_recreate: bool = False
+    force_recreate: bool = False,
+    included_sources: Optional[List[str]] = None
 ) -> Optional[MinimeeAgent]:
     """
     Get the Minimee leader agent for a user
@@ -92,6 +96,8 @@ def get_minimee_leader_agent(
         db: Database session
         llm: Optional LangChain LLM
         conversation_id: Optional conversation ID
+        force_recreate: Force recreation even if cached
+        included_sources: List of sources to include in RAG context (whatsapp, gmail). If None or empty, all sources included.
     
     Returns:
         MinimeeAgent instance or None if no leader found
@@ -108,7 +114,8 @@ def get_minimee_leader_agent(
         user_id=user_id,
         llm=llm,
         conversation_id=conversation_id,
-        force_recreate=force_recreate
+        force_recreate=force_recreate,
+        included_sources=included_sources
     )
 
 
@@ -117,7 +124,8 @@ def get_agent_by_whatsapp_name(
     user_id: int,
     db: Session,
     llm: Optional[BaseLanguageModel] = None,
-    conversation_id: Optional[str] = None
+    conversation_id: Optional[str] = None,
+    included_sources: Optional[List[str]] = None
 ) -> Optional[MinimeeAgent]:
     """
     Get agent by WhatsApp display name (for routing)
@@ -128,6 +136,7 @@ def get_agent_by_whatsapp_name(
         db: Database session
         llm: Optional LangChain LLM
         conversation_id: Optional conversation ID
+        included_sources: List of sources to include in RAG context (whatsapp, gmail). If None or empty, all sources included.
     
     Returns:
         MinimeeAgent instance or None if not found
@@ -143,14 +152,15 @@ def get_agent_by_whatsapp_name(
     
     if not agent:
         # Fallback to leader if name not found
-        return get_minimee_leader_agent(user_id, db, llm, conversation_id)
+        return get_minimee_leader_agent(user_id, db, llm, conversation_id, included_sources=included_sources)
     
     return get_or_create_agent(
         agent_id=agent.id,
         db=db,
         user_id=user_id,
         llm=llm,
-        conversation_id=conversation_id
+        conversation_id=conversation_id,
+        included_sources=included_sources
     )
 
 

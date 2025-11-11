@@ -8,6 +8,7 @@ export interface ChatMessage {
   timestamp: string;
   source: string;
   conversation_id: string | null;
+  active_sources?: string[] | null; // Sources actives au moment de l'envoi (null = toutes, [] = aucune, [source1, ...] = seulement ces sources)
 }
 
 export function useConversationHistory(

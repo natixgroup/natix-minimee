@@ -28,7 +28,11 @@ from routers import (
     metrics_router,
     llm_router,
     embeddings_router,
-    openai_router
+    openai_router,
+    auth_router,
+    user_info_router,
+    contact_category_router,
+    conversation_session_router
 )
 
 app = FastAPI(
@@ -139,6 +143,7 @@ async def log_requests(request: Request, call_next):
 
 
 # Include routers
+app.include_router(auth_router.router)
 app.include_router(health_router.router)
 app.include_router(settings_router.router)
 app.include_router(policy_router.router)
@@ -154,6 +159,9 @@ app.include_router(metrics_router.router)
 app.include_router(llm_router.router)
 app.include_router(embeddings_router.router)
 app.include_router(openai_router.router)
+app.include_router(user_info_router.router)
+app.include_router(contact_category_router.router)
+app.include_router(conversation_session_router.router)
 
 
 @app.on_event("startup")

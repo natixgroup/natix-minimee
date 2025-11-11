@@ -139,12 +139,22 @@ def build_embedding_metadata(
     chunk: bool = False,
     start_timestamp: Optional[datetime] = None,
     end_timestamp: Optional[datetime] = None,
+    topic: Optional[str] = None,
+    participants: Optional[list] = None,
     **extra_metadata
 ) -> Dict:
     """
     Build standard metadata dict for embedding from a Message object
-    Includes: sender, recipient, recipients, source, conversation_id, language, timestamp, chunk
-    Also includes temporal metadata: period_label, time_range, year, month, season
+    
+    Stores in DB:
+    - topic: Latent topic of the conversation block (if chunk) or message
+    - participants: List of participants in the conversation block
+    - temporal_context: Temporal metadata (period_label, time_range, year, month, season)
+    - Basic info: sender, recipient, recipients, source, conversation_id, language, timestamp, chunk
+    
+    Calculated on-the-fly (NOT stored):
+    - relevance_score: Calculated by retriever based on similarity
+    - recency_weight: Calculated by retriever based on timestamp
     """
     msg_timestamp = message.timestamp if message.timestamp else datetime.utcnow()
     
@@ -156,16 +166,36 @@ def build_embedding_metadata(
         'timestamp': msg_timestamp.isoformat(),
     }
     
-    # Add temporal metadata
+    # Add temporal metadata (stored as temporal_context)
     temporal_meta = _calculate_temporal_metadata(msg_timestamp)
-    metadata.update(temporal_meta)
+    metadata['temporal_context'] = temporal_meta
     
     # If block has start/end timestamps, use them for time_range
     if start_timestamp and end_timestamp:
-        metadata['time_range'] = f"{start_timestamp.date().isoformat()} → {end_timestamp.date().isoformat()}"
+        metadata['temporal_context']['time_range'] = f"{start_timestamp.date().isoformat()} → {end_timestamp.date().isoformat()}"
         # Recalculate period_label based on start timestamp
         start_temporal = _calculate_temporal_metadata(start_timestamp)
-        metadata['period_label'] = start_temporal['period_label']
+        metadata['temporal_context']['period_label'] = start_temporal['period_label']
+    
+    # Store topic if provided (for chunks/blocks)
+    if topic:
+        metadata['topic'] = topic
+    elif chunk:
+        # Default topic for chunks
+        metadata['topic'] = 'conversation'
+    
+    # Store participants if provided (for chunks/blocks)
+    if participants:
+        metadata['participants'] = participants
+    elif chunk:
+        # For chunks, extract participants from message if available
+        if message.recipients:
+            participants_list = [message.sender] + (message.recipients if isinstance(message.recipients, list) else [message.recipients])
+            metadata['participants'] = list(set(participants_list))
+        elif message.recipient:
+            metadata['participants'] = [message.sender, message.recipient] if message.sender else [message.recipient]
+        else:
+            metadata['participants'] = [message.sender] if message.sender else []
     
     # Add recipient info (for 1-1 conversations)
     if message.recipient:
@@ -183,7 +213,7 @@ def build_embedding_metadata(
     elif language:
         metadata['language'] = language
     
-    # Add any extra metadata
+    # Add any extra metadata (e.g., user_id, duration_minutes, etc.)
     metadata.update(extra_metadata)
     
     return metadata

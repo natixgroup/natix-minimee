@@ -55,6 +55,7 @@ minimee/
 - Node.js 20+
 - Python 3.11+
 - PostgreSQL 16+ (avec pgvector extension)
+- [Ollama](https://ollama.com) installé sur macOS (pour les modèles LLM locaux)
 
 ### Installation
 
@@ -105,30 +106,104 @@ minimee/
    - Health Check: http://localhost:8001/health
    - Metrics: http://localhost:8001/metrics
 
+6. **Installer les modèles Ollama (recommandé)**
+   ```bash
+   # Les modèles LLM tournent sur l'hôte macOS (pas dans Docker)
+   make install-ollama-models
+   ```
+   
+   Voir la section [Configuration Ollama](#-configuration-ollama-modèles-locaux) pour plus de détails.
+
 ## 📋 Commandes Make
 
 ```bash
-make help     # Affiche l'aide
-make up       # Démarre tous les services
-make down     # Arrête tous les services
-make logs     # Affiche les logs
-make build    # Build les images Docker
-make restart  # Redémarre les services
-make clean    # Nettoie volumes et containers
-make test     # Lance les tests (backend + frontend)
-make lint     # Lance le linting (backend + frontend)
-make seed     # Charge les données par défaut
-make backup   # Crée une sauvegarde de la base de données
-make restore FILE=./backups/backup.sql.gz  # Restaure depuis un backup
+make help                 # Affiche l'aide
+make up                   # Démarre tous les services
+make down                 # Arrête tous les services
+make logs                 # Affiche les logs
+make build                # Build les images Docker
+make restart              # Redémarre les services
+make clean                # Nettoie volumes et containers
+make test                 # Lance les tests (backend + frontend)
+make lint                 # Lance le linting (backend + frontend)
+make seed                 # Charge les données par défaut
+make backup               # Crée une sauvegarde de la base de données
+make restore FILE=...     # Restaure depuis un backup
+make install-ollama-models # Installe les modèles Ollama recommandés
 ```
 
 ## 🧩 Services Docker
 
 - **postgres**: Base de données PostgreSQL avec pgvector (port 5432)
 - **backend**: API FastAPI (port 8001 - externe, 8000 interne)
-- **dashboard**: Next.js avec hot-reload (port 3000)
-- **bridge**: Bridge WhatsApp Baileys
-- **ollama**: LLM local (port 11434)
+- **dashboard**: Next.js avec hot-reload (port 3002 externe, 3000 interne)
+- **bridge**: Bridge WhatsApp Baileys (port 3003)
+
+**Note**: Ollama tourne sur l'hôte macOS (pas dans Docker) - voir section [Configuration Ollama](#-configuration-ollama-modèles-locaux) pour les raisons
+
+## 🤖 Configuration Ollama (Modèles Locaux)
+
+Les modèles LLM tournent sur l'hôte macOS (pas dans Docker). Chaque développeur doit installer Ollama localement.
+
+### Pourquoi Ollama sur l'hôte et pas dans Docker ?
+
+Ollama a été configuré pour tourner sur l'hôte macOS plutôt que dans un container Docker pour plusieurs raisons importantes :
+
+1. **Performance optimale** : 
+   - En container Docker, les générations prenaient 14-57 secondes par requête
+   - Sur l'hôte macOS, les performances sont significativement meilleures
+   - Timeout configuré à 90s pour gérer les cas Docker (maintenant inutile mais conservé pour compatibilité)
+
+2. **Optimisation Apple Silicon** :
+   - Accès direct au Neural Engine et GPU des puces Apple (M1/M2/M3/M4)
+   - Meilleure utilisation de la mémoire unifiée
+   - Pas de pénalité de virtualisation Docker
+
+3. **Gestion mémoire** :
+   - Accès à toute la RAM disponible (24GB sur Mac M4)
+   - Pas de limitations de mémoire Docker
+   - Meilleure allocation pour les modèles volumineux
+
+4. **Simplicité** :
+   - Pas besoin de volumes Docker pour stocker les modèles (~4GB)
+   - Les modèles sont stockés dans `~/.ollama` par défaut
+   - Installation et mise à jour plus simples
+
+5. **Réseau** :
+   - Le backend Docker se connecte à Ollama via `host.docker.internal:11434`
+   - Pas de latence réseau supplémentaire entre containers
+   - Communication directe hôte → hôte
+
+### Prérequis
+- [Ollama installé](https://ollama.com) sur votre Mac
+- Ollama en cours d'exécution (`ollama serve` ou via l'application Ollama)
+
+### Installation des modèles recommandés
+
+```bash
+# Option 1 : Via Makefile (recommandé)
+make install-ollama-models
+
+# Option 2 : Script direct
+bash scripts/install_ollama_models.sh
+```
+
+### Modèles recommandés
+- `llama3.2:1b` (~1.3 GB) - Modèle par défaut, léger et rapide
+- `deepseek-r1:1.5b` (~1.1 GB) - Excellent pour le raisonnement, très performant pour sa taille
+- `gemma2:2b` (~1.6 GB) - Google Gemma 2B, multilingue et récent
+
+**Total : ~4.0 GB d'espace disque requis**
+
+### Vérifier les modèles installés
+```bash
+ollama list
+```
+
+### Configuration Backend
+Le backend se connecte à Ollama via `http://host.docker.internal:11434` (configuré dans `apps/backend/config.py`).
+
+Les modèles sont versionnés dans `scripts/ollama-models.json` - vous pouvez ajouter/modifier des modèles en éditant ce fichier.
 
 ## 🔄 Workflow de Développement
 
@@ -213,8 +288,8 @@ bash scripts/restore_db.sh ./backups/minimee_backup_20240101_120000.sql.gz
 ## 📚 API Documentation
 
 Une fois le backend démarré, accédez à :
-- **Swagger UI** : http://localhost:8000/docs
-- **ReDoc** : http://localhost:8000/redoc
+- **Swagger UI** : http://localhost:8001/docs
+- **ReDoc** : http://localhost:8001/redoc
 
 ## 🔐 Security
 
@@ -226,7 +301,7 @@ Une fois le backend démarré, accédez à :
 ## 📝 Features Implemented
 
 - ✅ Monorepo structure
-- ✅ Docker orchestration
+- ✅ Docker orchestration (postgres, backend, dashboard, bridge)
 - ✅ Database schema with pgvector
 - ✅ FastAPI backend with RAG
 - ✅ Next.js dashboard
@@ -238,6 +313,9 @@ Une fois le backend démarré, accédez à :
 - ✅ CI/CD pipeline
 - ✅ Seed data scripts
 - ✅ Backup/restore scripts
+- ✅ Ollama integration (modèles locaux sur hôte macOS)
+- ✅ Support multi-providers LLM (Ollama, vLLM, OpenAI)
+- ✅ Script d'installation automatisé des modèles Ollama
 
 ## 📄 Licence
 

@@ -17,6 +17,7 @@ export interface Agent {
   whatsapp_integration_id: number | null;
   whatsapp_display_name: string | null;
   approval_rules: Record<string, any> | null;
+  avatar_url?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -127,6 +128,14 @@ class ApiClient {
       
       if (!isFormData) {
         headers["Content-Type"] = "application/json";
+      }
+      
+      // Add authentication token if available
+      if (typeof window !== "undefined") {
+        const token = localStorage.getItem("auth_token");
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
       }
       
       // Merge with any existing headers
@@ -639,6 +648,35 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(data),
     });
+  }
+
+  async getAllContacts(userId: number) {
+    return this.request<Array<{
+      id: number;
+      user_id: number;
+      conversation_id: string;
+      first_name?: string;
+      nickname?: string;
+      gender?: string;
+      relation_types?: Array<{
+        id: number;
+        code: string;
+        label_masculin: string;
+        label_feminin: string;
+        label_autre?: string;
+        category: string;
+        display_order: number;
+        is_active: boolean;
+        meta_data?: Record<string, any>;
+      }>;
+      context?: string;
+      languages?: string[];
+      location?: string;
+      importance_rating?: number;
+      dominant_themes?: string[];
+      created_at: string;
+      updated_at: string;
+    }>>(`/ingest/contacts?user_id=${userId}`);
   }
 
   async getContact(conversationId: string, userId: number) {
@@ -1172,21 +1210,29 @@ class ApiClient {
     content: string,
     userId: number,
     conversationId?: string,
+    includedSources?: string[],
     onToken?: (token: string) => void,
     onComplete?: (response: string, actions: any[], debugInfo?: any) => void,
     onError?: (error: Error) => void
   ) {
     try {
+      const body: any = {
+        content,
+        user_id: userId,
+        conversation_id: conversationId,
+      };
+      
+      // Add included_sources: undefined/null = all sources, [] = no sources, [source1, ...] = only these sources
+      if (includedSources !== undefined) {
+        body.included_sources = includedSources;
+      }
+      
       const response = await fetch(`${this.baseUrl}/minimee/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          content,
-          user_id: userId,
-          conversation_id: conversationId,
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -1337,6 +1383,193 @@ class ApiClient {
         method: "DELETE",
       }
     );
+  }
+
+  // User Info API
+  async getUserInfos(userId: number, infoType?: string) {
+    const queryParams = new URLSearchParams({ user_id: String(userId) });
+    if (infoType) queryParams.append("info_type", infoType);
+    return this.request<any[]>(`/user-info?${queryParams.toString()}`);
+  }
+
+  async getUserInfo(userInfoId: number, userId: number) {
+    return this.request<any>(`/user-info/${userInfoId}?user_id=${userId}`);
+  }
+
+  async createUserInfo(userId: number, data: { info_type: string; info_value?: string; info_value_json?: any }) {
+    return this.request<any>(`/user-info?user_id=${userId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateUserInfo(userInfoId: number, userId: number, data: { info_value?: string; info_value_json?: any }) {
+    return this.request<any>(`/user-info/${userInfoId}?user_id=${userId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteUserInfo(userInfoId: number, userId: number) {
+    return this.request<{ message: string }>(`/user-info/${userInfoId}?user_id=${userId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getUserInfoVisibilities(userInfoId: number, userId: number) {
+    return this.request<any[]>(`/user-info/${userInfoId}/visibility?user_id=${userId}`);
+  }
+
+  async createUserInfoVisibility(
+    userInfoId: number,
+    userId: number,
+    data: {
+      relation_type_id?: number;
+      contact_id?: number;
+      can_use_for_response: boolean;
+      can_say_explicitly: boolean;
+      forbidden_for_response: boolean;
+      forbidden_to_say: boolean;
+    }
+  ) {
+    return this.request<any>(`/user-info/${userInfoId}/visibility?user_id=${userId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateUserInfoVisibility(
+    userInfoId: number,
+    visibilityId: number,
+    userId: number,
+    data: {
+      can_use_for_response?: boolean;
+      can_say_explicitly?: boolean;
+      forbidden_for_response?: boolean;
+      forbidden_to_say?: boolean;
+    }
+  ) {
+    return this.request<any>(`/user-info/${userInfoId}/visibility/${visibilityId}?user_id=${userId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteUserInfoVisibility(userInfoId: number, visibilityId: number, userId: number) {
+    return this.request<{ message: string }>(`/user-info/${userInfoId}/visibility/${visibilityId}?user_id=${userId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getUserContextForAgent(userId: number, relationTypeId?: number, contactId?: number) {
+    const queryParams = new URLSearchParams({ user_id: String(userId) });
+    if (relationTypeId) queryParams.append("relation_type_id", String(relationTypeId));
+    if (contactId) queryParams.append("contact_id", String(contactId));
+    return this.request<{ context: string }>(`/user-info/context/for-agent?${queryParams.toString()}`);
+  }
+
+  // Contact Category API
+  async getContactCategories(userId?: number, categoryType?: string, includeSystem: boolean = true) {
+    const queryParams = new URLSearchParams();
+    if (userId) queryParams.append("user_id", String(userId));
+    if (categoryType) queryParams.append("category_type", categoryType);
+    queryParams.append("include_system", String(includeSystem));
+    return this.request<any[]>(`/contact-categories?${queryParams.toString()}`);
+  }
+
+  async getContactCategory(categoryId: number) {
+    return this.request<any>(`/contact-categories/${categoryId}`);
+  }
+
+  async createContactCategory(userId: number, data: { code: string; label: string; category_type: string; display_order?: number; metadata?: any }) {
+    return this.request<any>(`/contact-categories?user_id=${userId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateContactCategory(categoryId: number, userId: number, data: { label?: string; category_type?: string; display_order?: number; metadata?: any }) {
+    return this.request<any>(`/contact-categories/${categoryId}?user_id=${userId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteContactCategory(categoryId: number, userId: number) {
+    return this.request<{ message: string }>(`/contact-categories/${categoryId}?user_id=${userId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async classifyContact(contactId: number, userId: number, source?: string) {
+    const queryParams = new URLSearchParams({ user_id: String(userId) });
+    if (source) queryParams.append("source", source);
+    return this.request<any>(`/contact-categories/contacts/${contactId}/classify?${queryParams.toString()}`, {
+      method: "POST",
+    });
+  }
+
+  async updateContactCategory(contactId: number, userId: number, categoryId?: number) {
+    const queryParams = new URLSearchParams({ user_id: String(userId) });
+    if (categoryId) queryParams.append("category_id", String(categoryId));
+    return this.request<any>(`/contact-categories/contacts/${contactId}/category?${queryParams.toString()}`, {
+      method: "PUT",
+    });
+  }
+
+  // Conversation Session API
+  async getConversationSessions(userId: number, sessionType?: string, includeDeleted: boolean = false) {
+    const queryParams = new URLSearchParams({ user_id: String(userId), include_deleted: String(includeDeleted) });
+    if (sessionType) queryParams.append("session_type", sessionType);
+    return this.request<any[]>(`/conversation-sessions?${queryParams.toString()}`);
+  }
+
+  async getConversationSession(sessionId: number, userId: number) {
+    return this.request<any>(`/conversation-sessions/${sessionId}?user_id=${userId}`);
+  }
+
+  async createConversationSession(userId: number, data: { session_type: string; title?: string; conversation_id: string }) {
+    return this.request<any>(`/conversation-sessions?user_id=${userId}`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateConversationSession(sessionId: number, userId: number, data: { title?: string; deleted_at?: string }) {
+    return this.request<any>(`/conversation-sessions/${sessionId}?user_id=${userId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteConversationSession(sessionId: number, userId: number, deleteEmbeddings: boolean = false) {
+    const queryParams = new URLSearchParams({ user_id: String(userId), delete_embeddings: String(deleteEmbeddings) });
+    return this.request<{ message: string; embeddings_deleted: boolean }>(`/conversation-sessions/${sessionId}?${queryParams.toString()}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getSessionMessages(sessionId: number, userId: number, limit: number = 100) {
+    const queryParams = new URLSearchParams({ user_id: String(userId), limit: String(limit) });
+    return this.request<any[]>(`/conversation-sessions/${sessionId}/messages?${queryParams.toString()}`);
+  }
+
+  // Getting to Know Session API
+  async startGettingToKnowSession(userId: number) {
+    return this.request<any>(`/conversation-sessions/getting-to-know/start?user_id=${userId}`, {
+      method: "POST",
+    });
+  }
+
+  async answerGettingToKnowQuestion(sessionId: number, userId: number, answer: string, questionType?: string) {
+    return this.request<any>(`/conversation-sessions/getting-to-know/${sessionId}/answer?user_id=${userId}`, {
+      method: "POST",
+      body: JSON.stringify({ answer, question_type: questionType }),
+    });
+  }
+
+  async getCurrentQuestion(sessionId: number, userId: number) {
+    return this.request<any>(`/conversation-sessions/getting-to-know/${sessionId}/question?user_id=${userId}`);
   }
 }
 

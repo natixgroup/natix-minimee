@@ -27,9 +27,11 @@ import { api } from "@/lib/api";
 interface ChatInterfaceProps {
   userId: number;
   conversationId: string;
+  includedSources?: string[];
+  sessionId?: number | null;
 }
 
-export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
+export function ChatInterface({ userId, conversationId, includedSources, sessionId }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [showWhatsApp, setShowWhatsApp] = useState(true); // Default to true to show WhatsApp messages
@@ -129,6 +131,9 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
   const handleSend = useCallback(() => {
     if (!input.trim() || isStreaming) return;
 
+    // Determine active sources: undefined/null = all sources, [] = no sources, [source1, ...] = only these sources
+    const activeSources = includedSources === undefined ? null : includedSources;
+
     const userMessage: ChatMessage = {
       id: Date.now(), // Temporary ID
       content: input.trim(),
@@ -136,6 +141,7 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
       timestamp: new Date().toISOString(),
       source: "dashboard",
       conversation_id: conversationId,
+      active_sources: activeSources,
     };
 
     // Add user message immediately
@@ -153,6 +159,12 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
         setStreamingMessage((prev) => prev + token);
       },
       (response, responseActions, debugInfo) => {
+        // Determine active sources from debugInfo or includedSources
+        // debugInfo.included_sources can be null (all sources), [] (no sources), or [source1, ...] (only these sources)
+        const activeSources = debugInfo?.included_sources !== undefined 
+          ? (debugInfo.included_sources === null ? null : debugInfo.included_sources)
+          : (includedSources === undefined ? null : includedSources);
+
         const minimeeMessage: ChatMessage = {
           id: Date.now() + 1, // Temporary ID
           content: response,
@@ -160,6 +172,7 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
           timestamp: new Date().toISOString(),
           source: "minimee",
           conversation_id: conversationId,
+          active_sources: activeSources,
         };
 
         setMessages((prev) => [...prev, minimeeMessage]);
@@ -188,9 +201,10 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
         setTimeout(() => {
           inputRef.current?.focus();
         }, 100);
-      }
+      },
+      includedSources
     );
-  }, [input, userId, conversationId, isStreaming, sendMessage]);
+  }, [input, userId, conversationId, isStreaming, sendMessage, includedSources]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -290,6 +304,27 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
                           )}
                         </div>
                       )}
+                      {/* Show active data sources */}
+                      {msg.active_sources !== undefined && (
+                        <div className="flex items-center gap-1 mb-1 flex-wrap">
+                          <span className="text-xs text-muted-foreground">Sources RAG:</span>
+                          {msg.active_sources === null ? (
+                            <Badge variant="outline" className="text-xs">
+                              Toutes
+                            </Badge>
+                          ) : msg.active_sources.length === 0 ? (
+                            <Badge variant="outline" className="text-xs text-destructive">
+                              Aucune
+                            </Badge>
+                          ) : (
+                            msg.active_sources.map((source) => (
+                              <Badge key={source} variant="outline" className="text-xs capitalize">
+                                {source}
+                              </Badge>
+                            ))
+                          )}
+                        </div>
+                      )}
                       <div className="whitespace-pre-wrap">{msg.content}</div>
                       <div className="text-xs opacity-70 mt-1">
                         {new Date(msg.timestamp).toLocaleTimeString()}
@@ -303,6 +338,30 @@ export function ChatInterface({ userId, conversationId }: ChatInterfaceProps) {
                   <div className="flex justify-start">
                     <div className="max-w-[80%] rounded-lg px-4 py-2 bg-muted">
                       <div className="text-xs font-semibold mb-1">Minimee:</div>
+                      {/* Show active data sources for streaming message */}
+                      {(() => {
+                        const activeSources = includedSources === undefined ? null : includedSources;
+                        return (
+                          <div className="flex items-center gap-1 mb-1 flex-wrap">
+                            <span className="text-xs text-muted-foreground">Sources RAG:</span>
+                            {activeSources === null ? (
+                              <Badge variant="outline" className="text-xs">
+                                Toutes
+                              </Badge>
+                            ) : activeSources.length === 0 ? (
+                              <Badge variant="outline" className="text-xs text-destructive">
+                                Aucune
+                              </Badge>
+                            ) : (
+                              activeSources.map((source) => (
+                                <Badge key={source} variant="outline" className="text-xs capitalize">
+                                  {source}
+                                </Badge>
+                              ))
+                            )}
+                          </div>
+                        );
+                      })()}
                       <div className="whitespace-pre-wrap">
                         {streamingMessage}
                         <span className="animate-pulse">▊</span>

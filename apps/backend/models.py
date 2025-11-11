@@ -16,6 +16,8 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=True)
+    password_hash = Column(String, nullable=True)
+    avatar_url = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -29,6 +31,9 @@ class User(Base):
     whatsapp_integrations = relationship("WhatsAppIntegration", back_populates="user")
     contacts = relationship("Contact", back_populates="user")
     ingestion_jobs = relationship("IngestionJob", back_populates="user")
+    user_infos = relationship("UserInfo", back_populates="user")
+    contact_categories = relationship("ContactCategory", back_populates="user")
+    conversation_sessions = relationship("ConversationSession", back_populates="user")
 
 
 class Message(Base):
@@ -299,9 +304,12 @@ class Contact(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+    contact_category_id = Column(Integer, ForeignKey("contact_categories.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # Relationships
     user = relationship("User", back_populates="contacts")
     relation_types = relationship("RelationType", secondary="contact_relation_types", back_populates="contacts")
+    category = relationship("ContactCategory", back_populates="contacts")
     
     # Unique constraint: one contact per conversation per user
     __table_args__ = (
@@ -323,4 +331,90 @@ class IngestionJob(Base):
 
     # Relationships
     user = relationship("User", back_populates="ingestion_jobs")
+
+
+class UserInfo(Base):
+    __tablename__ = "user_info"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    info_type = Column(String, nullable=False, index=True)  # first_name, last_name, birth_date, etc.
+    info_value = Column(Text, nullable=True)  # For simple text values
+    info_value_json = Column(JSONB, nullable=True)  # For complex values (arrays, objects like children)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="user_infos")
+    visibilities = relationship("UserInfoVisibility", back_populates="user_info", cascade="all, delete-orphan")
+    
+    # Unique constraint: one info per type per user
+    __table_args__ = (
+        sa.UniqueConstraint('user_id', 'info_type', name='uq_user_info_user_type'),
+    )
+
+
+class UserInfoVisibility(Base):
+    __tablename__ = "user_info_visibility"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_info_id = Column(Integer, ForeignKey("user_info.id", ondelete="CASCADE"), nullable=False, index=True)
+    relation_type_id = Column(Integer, ForeignKey("relation_types.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL = global rule
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL = rule for category, not specific contact
+    can_use_for_response = Column(Boolean, nullable=False, default=False)  # Utilisé pour répondre à
+    can_say_explicitly = Column(Boolean, nullable=False, default=False)  # Dit explicitement à
+    forbidden_for_response = Column(Boolean, nullable=False, default=False)  # Interdit pour répondre
+    forbidden_to_say = Column(Boolean, nullable=False, default=False)  # Interdit de dire explicitement
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user_info = relationship("UserInfo", back_populates="visibilities")
+    relation_type = relationship("RelationType", backref="user_info_visibilities")
+    contact = relationship("Contact", backref="user_info_visibilities")
+    
+    # Unique constraint: one visibility rule per user_info + relation_type/contact combination
+    __table_args__ = (
+        sa.UniqueConstraint('user_info_id', 'relation_type_id', 'contact_id', name='uq_user_info_visibility_composite'),
+    )
+
+
+class ContactCategory(Base):
+    __tablename__ = "contact_categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, nullable=False, index=True)  # Unique code like 'famille', 'amis'
+    label = Column(String, nullable=False)
+    category_type = Column(String, nullable=False, index=True)  # 'personnel', 'professionnel', 'autre'
+    is_system = Column(Boolean, nullable=False, default=False, index=True)  # System categories vs user-created
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)  # NULL for system categories
+    display_order = Column(Integer, nullable=False, default=0)
+    meta_data = Column("metadata", JSONB, nullable=True)  # For icons, colors, descriptions (renamed to avoid SQLAlchemy reserved word)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="contact_categories")
+    contacts = relationship("Contact", back_populates="category")
+    
+    # Unique constraint: code must be unique per user (or globally for system categories)
+    __table_args__ = (
+        sa.UniqueConstraint('code', 'user_id', name='uq_contact_categories_code_user'),
+    )
+
+
+class ConversationSession(Base):
+    __tablename__ = "conversation_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    session_type = Column(String, nullable=False, index=True)  # 'normal', 'getting_to_know'
+    title = Column(String, nullable=True)  # User-defined or auto-generated title
+    conversation_id = Column(String, nullable=False, index=True)  # Links to messages.conversation_id
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    deleted_at = Column(DateTime, nullable=True, index=True)  # Soft delete
+
+    # Relationships
+    user = relationship("User", back_populates="conversation_sessions")
 

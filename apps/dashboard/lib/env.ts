@@ -8,8 +8,11 @@ export function getEnv() {
     throw new Error("NEXT_PUBLIC_API_URL is not set");
   }
   
+  const googlePlacesApiKey = process.env.NEXT_PUBLIC_GOOGLE_PLACES_API_KEY;
+  
   return {
     apiUrl,
+    googlePlacesApiKey,
   };
 }
 

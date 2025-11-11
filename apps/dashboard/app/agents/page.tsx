@@ -16,11 +16,13 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 export default function AgentsPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
-  const userId = 1; // TODO: Get from auth context
+  const { user } = useAuth();
+  const userId = user?.id;
 
   const { data: leaderAgent, isLoading: isLoadingLeader, error: leaderError } = useQuery<Agent | null>({
     queryKey: ["minimee-leader", userId],

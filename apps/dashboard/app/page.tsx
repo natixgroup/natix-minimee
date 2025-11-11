@@ -1,12 +1,41 @@
 "use client";
 
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Bot, MessageSquare, Clock, CheckCircle } from "lucide-react";
 import { useAgents } from "@/lib/hooks/useAgents";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 export default function OverviewPage() {
-  const { data: agents = [], isLoading } = useAgents();
+  const router = useRouter();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const userId = user?.id;
+  const { data: agents = [], isLoading } = useAgents(userId);
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.push("/auth/login");
+    }
+  }, [authLoading, isAuthenticated, router]);
+
+  if (authLoading) {
+    return (
+      <DashboardLayout>
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold">Overview</h1>
+            <p className="text-muted-foreground">Loading...</p>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return null;
+  }
 
   const stats = [
     {

@@ -1,7 +1,7 @@
 """
 Pydantic schemas for request/response validation
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -287,6 +287,7 @@ class ChatMessageRequest(BaseModel):
     source: Optional[str] = "dashboard"
     timestamp: Optional[str] = None
     agent_name: Optional[str] = None  # For routing to specific agent via [Agent Name] prefix
+    included_sources: Optional[List[str]] = None  # List of sources to include in RAG context (whatsapp, gmail). None = all sources, [] = no sources, [source1, ...] = only these sources.
 
 
 class ChatMessageResponse(BaseModel):
@@ -363,6 +364,160 @@ class ContactCreate(BaseModel):
     location: Optional[str] = None
     importance_rating: Optional[int] = Field(None, ge=1, le=5)
     dominant_themes: Optional[List[str]] = None
+
+
+# User Info Schemas
+class UserInfoCreate(BaseModel):
+    info_type: str
+    info_value: Optional[str] = None
+    info_value_json: Optional[Any] = None  # Can be Dict, List, or any JSON-serializable value
+
+
+class UserInfoUpdate(BaseModel):
+    info_value: Optional[str] = None
+    info_value_json: Optional[Any] = None  # Can be Dict, List, or any JSON-serializable value
+
+
+class UserInfoResponse(BaseModel):
+    id: int
+    user_id: int
+    info_type: str
+    info_value: Optional[str] = None
+    info_value_json: Optional[Any] = None  # Can be Dict, List, or any JSON-serializable value
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UserInfoVisibilityCreate(BaseModel):
+    relation_type_id: Optional[int] = None
+    contact_id: Optional[int] = None
+    can_use_for_response: bool = False
+    can_say_explicitly: bool = False
+    forbidden_for_response: bool = False
+    forbidden_to_say: bool = False
+
+
+class UserInfoVisibilityUpdate(BaseModel):
+    can_use_for_response: Optional[bool] = None
+    can_say_explicitly: Optional[bool] = None
+    forbidden_for_response: Optional[bool] = None
+    forbidden_to_say: Optional[bool] = None
+
+
+class UserInfoVisibilityResponse(BaseModel):
+    id: int
+    user_info_id: int
+    relation_type_id: Optional[int] = None
+    contact_id: Optional[int] = None
+    can_use_for_response: bool
+    can_say_explicitly: bool
+    forbidden_for_response: bool
+    forbidden_to_say: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Contact Category Schemas
+class ContactCategoryCreate(BaseModel):
+    code: str
+    label: str
+    category_type: str  # 'personnel', 'professionnel', 'autre'
+    display_order: Optional[int] = 0
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ContactCategoryUpdate(BaseModel):
+    label: Optional[str] = None
+    category_type: Optional[str] = None
+    display_order: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class ContactCategoryResponse(BaseModel):
+    id: int
+    code: str
+    label: str
+    category_type: str
+    is_system: bool
+    user_id: Optional[int] = None
+    display_order: int
+    metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+        populate_by_name = True
+    
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        """Map meta_data to metadata when validating from ORM"""
+        # Check if it's a SQLAlchemy ORM object
+        if hasattr(obj, 'meta_data'):
+            # Create a dict with all attributes, mapping meta_data to metadata
+            data = {
+                "id": obj.id,
+                "code": obj.code,
+                "label": obj.label,
+                "category_type": obj.category_type,
+                "is_system": obj.is_system,
+                "user_id": obj.user_id,
+                "display_order": obj.display_order,
+                "metadata": obj.meta_data,  # Map meta_data to metadata
+                "created_at": obj.created_at,
+                "updated_at": obj.updated_at,
+            }
+            return cls(**data)
+        return super().model_validate(obj, **kwargs)
+
+
+# Conversation Session Schemas
+class ConversationSessionCreate(BaseModel):
+    session_type: str = "normal"  # 'normal', 'getting_to_know'
+    title: Optional[str] = None
+    conversation_id: str
+
+
+class ConversationSessionUpdate(BaseModel):
+    title: Optional[str] = None
+    deleted_at: Optional[datetime] = None
+
+
+class ConversationSessionResponse(BaseModel):
+    id: int
+    user_id: int
+    session_type: str
+    title: Optional[str] = None
+    conversation_id: str
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# Getting to Know Session Schemas
+class GettingToKnowAnswer(BaseModel):
+    answer: str
+    question_type: Optional[str] = None
+
+
+class GettingToKnowQuestionResponse(BaseModel):
+    question: Optional[str] = None
+    question_type: Optional[str] = None
+    required: bool = False
+    category: Optional[str] = None
+    progress: Optional[Dict[str, int]] = None
+    completed: bool = False
+    message: Optional[str] = None
+    error: Optional[str] = None
 
 
 class ContactUpdate(BaseModel):

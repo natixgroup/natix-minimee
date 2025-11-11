@@ -1,0 +1,23 @@
+{
+  "required_models": [
+    {
+      "name": "llama3.2:1b",
+      "description": "Modèle léger par défaut",
+      "size": "~1.3 GB"
+    },
+    {
+      "name": "deepseek-r1:1.5b",
+      "description": "DeepSeek R1 - Excellent pour le raisonnement",
+      "size": "~1.1 GB"
+    },
+    {
+      "name": "gemma2:2b",
+      "description": "Google Gemma 2B - Multilingue",
+      "size": "~1.6 GB"
+    }
+  ],
+  "optional_models": [],
+  "total_size_gb": 4.0
+}
+
+

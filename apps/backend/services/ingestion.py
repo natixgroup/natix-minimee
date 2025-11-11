@@ -534,6 +534,36 @@ def ingest_whatsapp_file(
             service="ingestion"
         )
         
+        # Auto-classify contact after import
+        try:
+            from services.contact_classifier import auto_classify_and_notify
+            classification_result = auto_classify_and_notify(
+                db=db,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                source='whatsapp',
+                confidence_threshold=0.7
+            )
+            if classification_result and classification_result.get('needs_validation'):
+                # Classification needs user validation - could emit notification here
+                log_to_db(
+                    db,
+                    "INFO",
+                    f"Contact classification suggested for conversation {conversation_id}: {classification_result.get('suggested_category_label')}",
+                    service="ingestion",
+                    user_id=user_id,
+                    metadata={"conversation_id": conversation_id, "classification": classification_result}
+                )
+        except Exception as e:
+            # Don't fail import if classification fails
+            log_to_db(
+                db,
+                "WARNING",
+                f"Failed to classify contact for conversation {conversation_id}: {str(e)}",
+                service="ingestion",
+                user_id=user_id
+            )
+        
         return stats
     
     except Exception as e:

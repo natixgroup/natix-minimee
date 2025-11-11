@@ -117,7 +117,7 @@ async def disconnect_gmail(
     db: Session = Depends(get_db)
 ):
     """
-    Disconnect Gmail by removing OAuth token
+    Disconnect Gmail by removing OAuth token only (does NOT delete imported data)
     """
     try:
         oauth_token = db.query(OAuthToken).filter(

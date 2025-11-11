@@ -19,10 +19,11 @@ def create_advanced_retriever(
     db: Session,
     user_id: int,
     conversation_id: Optional[str] = None,
-    source: Optional[str] = None,
-    initial_limit: int = 20,
-    final_limit: int = 10,
-    threshold: float = 0.2,  # Lowered from 0.3 to 0.2 for better recall (especially for proper names)
+    source: Optional[str] = None,  # Deprecated: use included_sources instead
+    included_sources: Optional[List[str]] = None,
+    initial_limit: int = 30,  # Increased from 20 to 30 for better recall
+    final_limit: int = 15,  # Increased from 10 to 15 for better context
+    threshold: float = 0.15,  # Lowered from 0.2 to 0.15 for better recall (especially for proper names and user info)
     use_reranking: bool = True,
     use_multi_query: bool = True,
     use_history_aware: bool = True
@@ -35,7 +36,8 @@ def create_advanced_retriever(
         db: Database session
         user_id: User ID for filtering
         conversation_id: Optional conversation ID filter
-        source: Optional source filter (whatsapp, gmail, etc.)
+        source: Optional source filter (whatsapp, gmail, etc.) - Deprecated: use included_sources instead
+        included_sources: List of sources to include (whatsapp, gmail). If None or empty, all sources included.
         initial_limit: Number of results to retrieve before reranking
         final_limit: Number of results to return after reranking
         threshold: Minimum similarity threshold
@@ -52,6 +54,7 @@ def create_advanced_retriever(
         user_id=user_id,
         conversation_id=conversation_id,
         source=source,
+        included_sources=included_sources,
         limit=initial_limit,
         threshold=threshold
     )
@@ -90,25 +93,28 @@ def create_advanced_retriever(
             log_to_db(db, "WARNING", f"Reranking failed, using base: {str(e)}", service="minimee_agent")
     
     # Step 3: History-aware retriever (uses conversation context)
-    # DISABLED for now - can transform simple queries like "Hajar" into complex queries
-    # if use_history_aware and llm:
-    #     try:
-    #         # Create prompt for history-aware retrieval
-    #         history_prompt = ChatPromptTemplate.from_messages([
-    #             MessagesPlaceholder(variable_name="chat_history"),
-    #             ("user", "{input}"),
-    #             ("user", "Given the above conversation, generate a search query to find relevant information from the conversation history.")
-    #         ])
-    #         
-    #         current_retriever = create_history_aware_retriever(
-    #             llm=llm,
-    #             retriever=current_retriever,
-    #             prompt=history_prompt
-    #         )
-    #     except Exception as e:
-    #         # Fallback if history-aware fails
-    #         from services.logs_service import log_to_db
-    #         log_to_db(db, "WARNING", f"History-aware retriever failed, using base: {str(e)}", service="minimee_agent")
+    # Improved prompt to avoid transforming simple queries into complex ones
+    if use_history_aware and llm:
+        try:
+            # Create improved prompt for history-aware retrieval
+            # More conservative: only reformulate if context is truly needed
+            history_prompt = ChatPromptTemplate.from_messages([
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("user", "{input}"),
+                ("user", "Given the above conversation, generate a search query to find relevant information. "
+                 "Keep the query simple and focused. If the input is already a clear search query (like a name or keyword), use it as-is. "
+                 "Only expand or reformulate if additional context from the conversation would help find more relevant results.")
+            ])
+            
+            current_retriever = create_history_aware_retriever(
+                llm=llm,
+                retriever=current_retriever,
+                prompt=history_prompt
+            )
+        except Exception as e:
+            # Fallback if history-aware fails
+            from services.logs_service import log_to_db
+            log_to_db(db, "WARNING", f"History-aware retriever failed, using base: {str(e)}", service="minimee_agent")
     
     return current_retriever
 
@@ -117,9 +123,10 @@ def create_simple_retriever(
     db: Session,
     user_id: int,
     conversation_id: Optional[str] = None,
-    source: Optional[str] = None,
-    limit: int = 10,
-    threshold: float = 0.2  # Lowered from 0.3 to 0.2 for better recall
+    source: Optional[str] = None,  # Deprecated: use included_sources instead
+    included_sources: Optional[List[str]] = None,
+    limit: int = 15,  # Increased from 10 to 15 for better context
+    threshold: float = 0.15  # Lowered from 0.2 to 0.15 for better recall
 ) -> BaseRetriever:
     """
     Create a simple retriever without advanced features (for fallback or simple use cases)
@@ -128,7 +135,8 @@ def create_simple_retriever(
         db: Database session
         user_id: User ID for filtering
         conversation_id: Optional conversation ID filter
-        source: Optional source filter
+        source: Optional source filter - Deprecated: use included_sources instead
+        included_sources: List of sources to include (whatsapp, gmail). If None or empty, all sources included.
         limit: Maximum number of results
         threshold: Minimum similarity threshold
     
@@ -140,6 +148,7 @@ def create_simple_retriever(
         user_id=user_id,
         conversation_id=conversation_id,
         source=source,
+        included_sources=included_sources,
         limit=limit,
         threshold=threshold
     )

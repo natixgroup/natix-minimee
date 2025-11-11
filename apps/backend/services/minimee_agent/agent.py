@@ -56,7 +56,10 @@ class MinimeeAgent:
         db: Session,
         user_id: int,
         llm: Optional[BaseLanguageModel] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        included_sources: Optional[List[str]] = None,
+        relation_type_id: Optional[int] = None,
+        contact_id: Optional[int] = None
     ):
         """
         Initialize Minimee Agent
@@ -67,6 +70,9 @@ class MinimeeAgent:
             user_id: User ID
             llm: Optional LangChain LLM (will create MinimeeLLM if not provided)
             conversation_id: Optional conversation ID for memory
+            included_sources: List of sources to include in RAG context (whatsapp, gmail). If None or empty, all sources included.
+            relation_type_id: Optional relation type ID for filtering user context
+            contact_id: Optional contact ID for filtering user context
         """
         # Store agent attributes to avoid detached instance errors
         # Access all needed attributes while agent is still attached
@@ -85,18 +91,58 @@ class MinimeeAgent:
         self.db = db
         self.user_id = user_id
         self.conversation_id = conversation_id or f"agent-{self.agent_id}-{user_id}"
+        self.included_sources = included_sources
+        self.relation_type_id = relation_type_id
+        self.contact_id = contact_id
+        
+        # Load user context (filtered by visibility rules)
+        from services.user_identity_extractor import get_user_context_for_agent
+        self.user_context = get_user_context_for_agent(
+            db=db,
+            user_id=user_id,
+            relation_type_id=relation_type_id,
+            contact_id=contact_id
+        )
         
         # Create LLM if not provided
         if llm is None:
             llm = create_minimee_llm(db=db, user_id=user_id)
         self.llm = llm
         
-        # Create retriever for RAG
+        # Create retriever for RAG with source filtering
         self.retriever = create_advanced_retriever(
             llm=llm,
             db=db,
             user_id=user_id,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
+            included_sources=included_sources
+        )
+        
+        # Create RAG chain for automatic context injection
+        from .rag_chain import create_rag_chain
+        from .prompts import create_agent_prompt
+        # Create a temporary agent-like object for prompt creation
+        from types import SimpleNamespace
+        agent_for_prompt = SimpleNamespace(
+            name=self.agent_name,
+            role=self.agent_role,
+            prompt=self.agent_prompt,
+            style=self.agent_style,
+            approval_rules=self.agent_approval_rules
+        )
+        prompt_template = create_agent_prompt(
+            agent_for_prompt,
+            user_context=self.user_context,
+            relation_type_id=self.relation_type_id
+        )
+        self.rag_chain = create_rag_chain(
+            retriever=self.retriever,
+            llm=llm,
+            prompt_template=prompt_template,
+            db=db,
+            user_id=user_id,
+            max_chunks=10,
+            timeout_seconds=5.0
         )
         
         # Create conversation memory (for manual management, not for executor)
@@ -120,7 +166,11 @@ class MinimeeAgent:
             style=self.agent_style,
             approval_rules=self.agent_approval_rules
         )
-        prompt = create_agent_prompt(agent_for_prompt)
+        prompt = create_agent_prompt(
+            agent_for_prompt,
+            user_context=self.user_context,
+            relation_type_id=self.relation_type_id
+        )
         
         # Create ReAct agent
         react_agent = create_react_agent(
@@ -249,9 +299,14 @@ class MinimeeAgent:
             import concurrent.futures
             
             def run_invoke():
-                # Prepare input with chat history
+                # Retrieve RAG context first
+                rag_result = self.rag_chain.invoke({"input": user_message})
+                rag_context = rag_result.get("context", "")
+                
+                # Prepare input with chat history and RAG context
                 input_data = {
                     "input": user_message,
+                    "context": rag_context,  # Inject RAG context
                 }
                 # Add chat history if available
                 if chat_history:
@@ -387,10 +442,28 @@ class MinimeeAgent:
         conv_id = conversation_id or self.conversation_id
         
         try:
-            # Build prompt with tools context
-            prompt_template = create_agent_prompt(self.agent)
+            # Retrieve RAG context first
+            rag_result = self.rag_chain.invoke({"input": user_message})
+            rag_context = rag_result.get("context", "")
+            
+            # Build prompt with tools context and RAG context
+            # Create agent-like object for prompt
+            from types import SimpleNamespace
+            agent_for_prompt = SimpleNamespace(
+                name=self.agent_name,
+                role=self.agent_role,
+                prompt=self.agent_prompt,
+                style=self.agent_style,
+                approval_rules=self.agent_approval_rules
+            )
+            prompt_template = create_agent_prompt(
+                agent_for_prompt,
+                user_context=self.user_context,
+                relation_type_id=self.relation_type_id
+            )
             formatted_prompt = prompt_template.format_messages(
                 input=user_message,
+                context=rag_context,  # Inject RAG context
                 chat_history=chat_history or self.memory.chat_memory.messages,
                 tools="\n".join([f"{tool.name}: {tool.description}" for tool in self.tools]),
                 tool_names=", ".join([tool.name for tool in self.tools]),

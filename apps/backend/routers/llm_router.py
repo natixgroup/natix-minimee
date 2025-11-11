@@ -152,6 +152,8 @@ async def get_ollama_models() -> list:
                 "codellama:7b": "7B",
                 "codellama:13b": "13B",
                 "codellama:34b": "34B",
+                "deepseek-r1:1.5b": "1.5B",
+                "gemma2:2b": "2B",
             }
             
             for model_info in models_data.get("models", []):
@@ -288,6 +290,33 @@ async def get_all_models():
         },
     ]
     all_models.extend(vllm_models)
+    
+    # Static Ollama models (recommended models that appear even if not installed)
+    static_ollama_models = [
+        {
+            "provider": "ollama",
+            "model": "deepseek-r1:1.5b",
+            "parameters": "1.5B",
+            "context_length": "16K tokens",
+            "available": True,  # Will be updated if actually installed
+            "description": "DeepSeek R1 - Excellent for reasoning tasks, very performant for its size",
+            "location_type": "local",
+            "cost": "free",
+            "size": "~1.0 GB"
+        },
+        {
+            "provider": "ollama",
+            "model": "gemma2:2b",
+            "parameters": "2B",
+            "context_length": "8K tokens",
+            "available": True,  # Will be updated if actually installed
+            "description": "Google Gemma 2B - Multilingual and recent, good performance/size balance",
+            "location_type": "local",
+            "cost": "free",
+            "size": "~1.4 GB"
+        },
+    ]
+    all_models.extend(static_ollama_models)
     
     # Add Ollama models (with short timeout to avoid blocking)
     # If Ollama is slow/unavailable, we still return the static models immediately

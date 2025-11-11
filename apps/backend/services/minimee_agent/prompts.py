@@ -7,12 +7,18 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from models import Agent
 
 
-def create_agent_prompt(agent: Agent) -> ChatPromptTemplate:
+def create_agent_prompt(
+    agent: Agent,
+    user_context: Optional[str] = None,
+    relation_type_id: Optional[int] = None
+) -> ChatPromptTemplate:
     """
     Create a personalized ReAct prompt for an agent
     
     Args:
         agent: Agent model with role, prompt, style, and approval_rules
+        user_context: Optional user identity context (filtered by visibility rules)
+        relation_type_id: Optional relation type ID for filtering user context
     
     Returns:
         ChatPromptTemplate for ReAct agent
@@ -34,19 +40,32 @@ def create_agent_prompt(agent: Agent) -> ChatPromptTemplate:
         escaped_style = agent.style.replace("{", "{{").replace("}", "}}")
         system_parts.append(f"Communication style: {escaped_style}")
     
+    # Add user identity context if available
+    if user_context:
+        escaped_user_context = user_context.replace("{", "{{").replace("}", "}}")
+        system_parts.append(f"\nUser Identity Information:\n{escaped_user_context}\n")
+        system_parts.append("Use this information to personalize your responses and understand the user's context. "
+                           "Some information may be marked as '[Context only - do not mention]' - use it to inform your responses but do not explicitly state it.")
+    
     # Add approval rules context if available
     if agent.approval_rules:
         approval_context = _format_approval_rules(agent.approval_rules)
         if approval_context:
             system_parts.append(f"\nApproval Rules:\n{approval_context}")
     
+    # Add RAG context placeholder instruction
+    system_parts.append("\nRelevant context from conversation history will be provided below. Use this context to inform your responses.")
+    
     system_message = "\n".join(system_parts)
     
-    # ReAct prompt template
+    # ReAct prompt template with RAG context
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_message),
         MessagesPlaceholder(variable_name="chat_history"),
-        ("human", """You have access to the following tools:
+        ("human", """Relevant Context from Conversation History:
+{context}
+
+You have access to the following tools:
 
 {tools}
 
@@ -62,7 +81,8 @@ Thought: I now know the final answer
 Final Answer: the final answer to the original input question
 
 When responding:
-- Use tools to search conversation history when you need context
+- Use the provided context above to inform your responses
+- Use tools to search conversation history when you need additional context beyond what's provided
 - Use tools to send WhatsApp messages when appropriate
 - Use get_current_date tool when asked about today's date or current time
 - Use calculate tool for mathematical calculations

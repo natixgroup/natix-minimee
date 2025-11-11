@@ -1,6 +1,7 @@
 "use client";
 
 import { useAgents, useDeleteAgent } from "@/lib/hooks/useAgents";
+import { useAuth } from "@/lib/hooks/useAuth";
 import {
   Table,
   TableBody,
@@ -15,6 +16,7 @@ import { Edit, Trash2, Crown } from "lucide-react";
 import { useState } from "react";
 import { AgentDialog } from "./AgentDialog";
 import { type Agent, api } from "@/lib/api";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Card,
   CardContent,
@@ -72,7 +74,7 @@ export function AgentList() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Name</TableHead>
+              <TableHead>Agent</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Leader</TableHead>
               <TableHead>Status</TableHead>
@@ -81,9 +83,25 @@ export function AgentList() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {agents.map((agent) => (
+            {agents.map((agent) => {
+              const initials = agent.name
+                .split(" ")
+                .map((n) => n[0])
+                .join("")
+                .toUpperCase()
+                .slice(0, 2);
+              
+              return (
               <TableRow key={agent.id}>
-                <TableCell className="font-medium">{agent.name}</TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarImage src={agent.avatar_url || undefined} alt={agent.name} />
+                      <AvatarFallback>{initials}</AvatarFallback>
+                    </Avatar>
+                    <span className="font-medium">{agent.name}</span>
+                  </div>
+                </TableCell>
                 <TableCell>{agent.role}</TableCell>
                 <TableCell>
                   {agent.is_minimee_leader ? (
@@ -143,7 +161,8 @@ export function AgentList() {
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
+            );
+            })}
           </TableBody>
         </Table>
       </div>

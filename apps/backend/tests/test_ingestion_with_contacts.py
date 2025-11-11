@@ -166,3 +166,4 @@ def test_temporal_metadata_in_embeddings(db: Session):
             # Check for temporal fields
             assert 'period_label' in emb.meta_data or 'year' in emb.meta_data or 'timestamp' in emb.meta_data
 
+

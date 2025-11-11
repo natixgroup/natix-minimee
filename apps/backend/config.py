@@ -43,6 +43,8 @@ class Settings(BaseSettings):
             "llama3.2:3b": 8192,
             "llama3.1:8b": 131072,
             "mistral": 32768,
+            "deepseek-r1:1.5b": 16384,
+            "gemma2:2b": 8192,
         },
         "vllm": {
             "mistral-7b-instruct-v0.1": 32768,

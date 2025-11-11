@@ -155,3 +155,4 @@ def test_create_conversational_blocks_topic_change():
     # Should create at least 2 blocks due to topic change (travail -> famille)
     assert len(blocks) >= 1  # May be 1 or 2 depending on topic detection sensitivity
 
+

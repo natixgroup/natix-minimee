@@ -4,24 +4,29 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Home, Bot, FileText, Settings, Moon, Sun, MessageSquare, Sparkles, TestTube } from "lucide-react";
+import { Home, Bot, FileText, Settings, Moon, Sun, MessageSquare, Sparkles, TestTube, CreditCard, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
+import { UserMenu } from "./UserMenu";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 const navigation = [
   { name: "Overview", href: "/", icon: Home },
   { name: "Minimee", href: "/minimee", icon: MessageSquare },
   { name: "Agents", href: "/agents", icon: Bot },
+  { name: "User Info", href: "/user-info", icon: User },
   { name: "Logs", href: "/logs", icon: FileText },
   { name: "Embeddings", href: "/embeddings", icon: Sparkles },
   { name: "Tests", href: "/tests", icon: TestTube },
   { name: "Settings", href: "/settings", icon: Settings },
+  { name: "Billing", href: "/billing", icon: CreditCard },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const { theme, setTheme } = useTheme();
+  const { isAuthenticated } = useAuth();
   
   // Use mounted state from useTheme if available, otherwise track it ourselves
   const [mounted, setMounted] = useState(false);
@@ -72,7 +77,12 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="border-t p-4">
+      <div className="border-t p-4 space-y-2">
+        {isAuthenticated && (
+          <div className="flex items-center justify-between mb-2">
+            <UserMenu />
+          </div>
+        )}
         <Button
           variant="ghost"
           size="sm"
