@@ -1,7 +1,12 @@
 "use client";
 
+import { Suspense } from "react";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { SettingsForm } from "@/components/settings/SettingsForm";
+
+function SettingsFormWrapper() {
+  return <SettingsForm />;
+}
 
 export default function SettingsPage() {
   return (
@@ -14,7 +19,9 @@ export default function SettingsPage() {
           </p>
         </div>
 
-        <SettingsForm />
+        <Suspense fallback={<div>Loading...</div>}>
+          <SettingsFormWrapper />
+        </Suspense>
       </div>
     </DashboardLayout>
   );

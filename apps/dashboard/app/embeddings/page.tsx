@@ -2,6 +2,7 @@
 
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { EmbeddingsTable } from "@/components/embeddings/EmbeddingsTable";
+import { DataSourceStats } from "@/components/embeddings/DataSourceStats";
 
 export default function EmbeddingsPage() {
   return (
@@ -13,6 +14,8 @@ export default function EmbeddingsPage() {
             Browse and search embeddings with their text content for debugging
           </p>
         </div>
+
+        <DataSourceStats />
 
         <EmbeddingsTable />
       </div>

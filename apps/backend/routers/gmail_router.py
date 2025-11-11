@@ -111,6 +111,30 @@ async def gmail_oauth_callback(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/gmail/disconnect")
+async def disconnect_gmail(
+    user_id: int = 1,  # TODO: Get from auth
+    db: Session = Depends(get_db)
+):
+    """
+    Disconnect Gmail by removing OAuth token
+    """
+    try:
+        oauth_token = db.query(OAuthToken).filter(
+            OAuthToken.user_id == user_id,
+            OAuthToken.provider == "gmail"
+        ).first()
+        
+        if oauth_token:
+            db.delete(oauth_token)
+            db.commit()
+            return {"message": "Gmail disconnected successfully"}
+        else:
+            return {"message": "No Gmail connection found"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/gmail/status")
 async def gmail_status(
     user_id: int = 1,  # TODO: Get from auth

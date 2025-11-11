@@ -709,6 +709,32 @@ class ApiClient {
     }>(`/ingest/jobs/${jobId}`);
   }
 
+  async getIngestionJobs(source?: string, userId: number = 1, limit: number = 100, offset: number = 0) {
+    const params = new URLSearchParams();
+    params.append("user_id", userId.toString());
+    params.append("limit", limit.toString());
+    params.append("offset", offset.toString());
+    if (source) {
+      params.append("source", source);
+    }
+    return this.request<{
+      items: Array<{
+        id: number;
+        source: string | null;
+        status: string;
+        conversation_id: string | null;
+        created_at: string;
+        updated_at: string;
+        error: string | null;
+        progress: Record<string, any> | null;
+        stats: Record<string, any>;
+      }>;
+      total: number;
+      limit: number;
+      offset: number;
+    }>(`/ingest/jobs?${params.toString()}`);
+  }
+
   async cancelIngestionJob(jobId: number) {
     return this.request<{ message: string; job_id: number }>(
       `/ingest/jobs/${jobId}/cancel`,
@@ -716,10 +742,31 @@ class ApiClient {
     );
   }
 
+  async deleteIngestionJob(jobId: number, userId: number = 1) {
+    return this.request<{
+      message: string;
+      deleted_messages: number;
+      deleted_embeddings: number;
+      deleted_contacts?: number;
+      deleted_threads?: number;
+    }>(`/ingest/jobs/${jobId}?user_id=${userId}`, { method: "DELETE" });
+  }
+
+  async deleteAllIngestionJobs(source: string, userId: number = 1) {
+    return this.request<{
+      message: string;
+      deleted_jobs: number;
+      deleted_messages: number;
+      deleted_embeddings: number;
+      deleted_contacts?: number;
+      deleted_threads?: number;
+    }>(`/ingest/jobs?source=${source}&user_id=${userId}`, { method: "DELETE" });
+  }
+
   // Gmail
-  async startGmailOAuth(userId: number = 1) {
+  async startGmailOAuth(userId: number = 1, forceConsent: boolean = false) {
     return this.request<{ authorization_url: string; state: string }>(
-      `/auth/gmail/start?user_id=${userId}`
+      `/auth/gmail/start?user_id=${userId}&force_consent=${forceConsent}`
     );
   }
 
@@ -765,6 +812,13 @@ class ApiClient {
   async handleGmailCallback(code: string, state: string, userId: number = 1) {
     return this.request<{ message: string; status: string }>(
       `/auth/gmail/callback?code=${code}&state=${state}&user_id=${userId}`
+    );
+  }
+
+  async disconnectGmail(userId: number = 1) {
+    return this.request<{ message: string }>(
+      `/gmail/disconnect?user_id=${userId}`,
+      { method: "DELETE" }
     );
   }
 
@@ -1212,6 +1266,30 @@ class ApiClient {
   }
 
   // Embeddings
+  async getEmbeddingsStatsBySource(userId: number = 1) {
+    return this.request<{
+      stats: {
+        gmail?: {
+          threads_count: number;
+          messages_count: number;
+          oldest_date: string | null;
+          newest_date: string | null;
+          last_import_date: string | null;
+          last_import_type: "bulk" | null;
+        };
+        whatsapp?: {
+          conversations_count: number;
+          interlocutors_count: number;
+          messages_count: number;
+          oldest_date: string | null;
+          newest_date: string | null;
+          last_import_date: string | null;
+          last_import_type: "bulk" | null;
+        };
+      };
+    }>(`/embeddings/stats-by-source?user_id=${userId}`);
+  }
+
   async getEmbeddings(params?: {
     source?: string;
     search?: string;

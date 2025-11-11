@@ -92,22 +92,47 @@ def generate_summaries_sync(
     async def process_all():
         results = []
         for idx, chunk in enumerate(chunks):
-            summary_data = await generate_summary(chunk['text'], db)
-            chunk_with_summary = {**chunk, **summary_data}
-            results.append(chunk_with_summary)
-            
-            # Call progress callback every 10 summaries or on last one
-            if progress_callback and ((idx + 1) % 10 == 0 or (idx + 1) == total_chunks):
-                progress_callback(idx + 1, total_chunks)
-            
-            # Log less frequently to avoid DB overhead
-            if db and (idx + 1) % 50 == 0:
+            try:
+                # Add timeout to prevent hanging (30 seconds per summary)
+                summary_data = await asyncio.wait_for(
+                    generate_summary(chunk['text'], db),
+                    timeout=30.0
+                )
+                chunk_with_summary = {**chunk, **summary_data}
+                results.append(chunk_with_summary)
+                
+                # Call progress callback every 10 summaries or on last one
+                if progress_callback and ((idx + 1) % 10 == 0 or (idx + 1) == total_chunks):
+                    progress_callback(idx + 1, total_chunks)
+                
+                # Log less frequently to avoid DB overhead
+                if db and (idx + 1) % 50 == 0:
+                    log_to_db(
+                        db,
+                        "INFO",
+                        f"Generated {idx + 1}/{total_chunks} summaries...",
+                        service="summarizer"
+                    )
+            except asyncio.TimeoutError:
                 log_to_db(
                     db,
-                    "INFO",
-                    f"Generated {idx + 1}/{total_chunks} summaries...",
+                    "WARNING",
+                    f"Summary generation timeout for chunk {idx + 1}/{total_chunks}, skipping summary",
                     service="summarizer"
                 )
+                # Add chunk without summary
+                chunk_with_summary = {**chunk, 'summary': '', 'tags': 'conversation'}
+                results.append(chunk_with_summary)
+            except Exception as e:
+                log_to_db(
+                    db,
+                    "ERROR",
+                    f"Failed to generate summary for chunk {idx + 1}/{total_chunks}: {str(e)}",
+                    service="summarizer"
+                )
+                # Add chunk without summary
+                chunk_with_summary = {**chunk, 'summary': '', 'tags': 'conversation'}
+                results.append(chunk_with_summary)
         return results
     
     summaries = loop.run_until_complete(process_all())

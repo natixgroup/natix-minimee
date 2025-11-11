@@ -7,7 +7,7 @@ import email
 import email.utils
 from email.header import decode_header
 from sqlalchemy.orm import Session
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Callable
 from datetime import datetime
 from models import Message, Embedding, Summary
 from services.embeddings import store_embedding
@@ -76,7 +76,8 @@ def index_gmail_thread(
     db: Session,
     thread_id: str,
     messages_data: List[Dict],
-    user_id: int
+    user_id: int,
+    progress_callback: Optional[Callable[[str, Dict], None]] = None
 ) -> Dict:
     """
     Index a Gmail thread with embeddings and chunks
@@ -89,14 +90,21 @@ def index_gmail_thread(
         'summaries_created': 0,
     }
     
+    def _emit_progress(step: str, data: Dict):
+        """Helper to emit progress via callback"""
+        if progress_callback:
+            progress_callback(step, data)
+    
     try:
         log_to_db(db, "INFO", f"Indexing Gmail thread {thread_id}", service="gmail_indexing")
+        
+        total_messages = len(messages_data)
         
         # Extract and format messages for indexing
         parsed_messages = []
         message_records = []
         
-        for msg_data in messages_data:
+        for msg_idx, msg_data in enumerate(messages_data):
             headers = msg_data.get('payload', {}).get('headers', [])
             
             # Extract headers
@@ -107,6 +115,20 @@ def index_gmail_thread(
             # Decode headers
             from_addr = decode_header_value(from_addr) if from_addr else "unknown"
             subject = decode_header_value(subject) if subject else ""
+            
+            # Emit progress for message being processed
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Processing message {msg_idx + 1}/{total_messages}...",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "message_index": msg_idx + 1,
+                    "total_messages": total_messages,
+                    "from": from_addr,
+                    "subject": subject or "(No subject)",
+                    "status": "processing"
+                }
+            })
             
             # Extract body
             payload = msg_data.get('payload', {})
@@ -163,6 +185,20 @@ def index_gmail_thread(
             })
             
             stats['messages_indexed'] += 1
+            
+            # Emit completion for message
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Processed message {msg_idx + 1}/{total_messages}",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "message_index": msg_idx + 1,
+                    "total_messages": total_messages,
+                    "from": from_addr,
+                    "subject": subject or "(No subject)",
+                    "status": "processed"
+                }
+            })
         
         # Create chunks (3-5 emails per chunk)
         chunks = create_chunks(parsed_messages, min_chunk_size=3, max_chunk_size=5)
@@ -176,11 +212,90 @@ def index_gmail_thread(
             ]
         
         # Generate summaries for chunks
-        chunks_with_summaries = generate_summaries_sync(chunks, db)
-        stats['summaries_created'] = len(chunks_with_summaries)
+        import time
+        summary_start_time = time.time()
+        _emit_progress("indexing", {
+            "step": "indexing",
+            "message": f"Generating summaries for {len(chunks)} chunks...",
+            "indexing_log": {
+                "thread_id": thread_id,
+                "chunks_count": len(chunks),
+                "status": "summarizing",
+                "start_time": summary_start_time
+            }
+        })
+        log_to_db(db, "INFO", f"Generating summaries for {len(chunks)} chunks in thread {thread_id}...", service="gmail_indexing")
+        
+        # Track summary progress with timer
+        def summary_progress_callback(current: int, total: int):
+            elapsed = time.time() - summary_start_time
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Generating summaries for {len(chunks)} chunks... ({current}/{total})",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "chunks_count": len(chunks),
+                    "current_summary": current,
+                    "total_summaries": total,
+                    "elapsed_seconds": int(elapsed),
+                    "status": "summarizing"
+                }
+            })
+        
+        try:
+            chunks_with_summaries = generate_summaries_sync(chunks, db, progress_callback=summary_progress_callback)
+            stats['summaries_created'] = len(chunks_with_summaries)
+            log_to_db(db, "INFO", f"Generated {len(chunks_with_summaries)} summaries for thread {thread_id}", service="gmail_indexing")
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Generated {len(chunks_with_summaries)} summaries",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "summaries_count": len(chunks_with_summaries),
+                    "status": "summaries_complete"
+                }
+            })
+        except Exception as e:
+            log_to_db(db, "ERROR", f"Failed to generate summaries for thread {thread_id}: {str(e)}", service="gmail_indexing")
+            # Continue without summaries - embeddings are more important
+            chunks_with_summaries = chunks
+            stats['summaries_created'] = 0
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Summary generation failed, continuing without summaries",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "status": "summaries_skipped",
+                    "error": str(e)[:100]  # Truncate error message
+                }
+            })
         
         # Store summaries and generate embeddings
-        for chunk in chunks_with_summaries:
+        _emit_progress("indexing", {
+            "step": "indexing",
+            "message": f"Generating embeddings for {len(chunks_with_summaries)} chunks...",
+            "indexing_log": {
+                "thread_id": thread_id,
+                "chunks_count": len(chunks_with_summaries),
+                "status": "embedding"
+            }
+        })
+        log_to_db(db, "INFO", f"Generating embeddings for {len(chunks_with_summaries)} chunks in thread {thread_id}...", service="gmail_indexing")
+        for chunk_idx, chunk in enumerate(chunks_with_summaries):
+            # Emit progress for each chunk
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Embedding chunk {chunk_idx + 1}/{len(chunks_with_summaries)}...",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "chunk_index": chunk_idx + 1,
+                    "total_chunks": len(chunks_with_summaries),
+                    "message_count": chunk.get('message_count', 0),
+                    "status": "embedding_chunk"
+                }
+            })
+            if chunk_idx % 5 == 0:  # Log every 5 chunks
+                log_to_db(db, "INFO", f"Processing chunk {chunk_idx + 1}/{len(chunks_with_summaries)} for thread {thread_id}...", service="gmail_indexing")
             # Store summary in DB
             summary = Summary(
                 conversation_id=thread_id,
@@ -211,10 +326,23 @@ def index_gmail_thread(
             db.flush()
             stats['embeddings_created'] += 1
             
+            # Emit progress for chunk embedding completion
+            _emit_progress("indexing", {
+                "step": "indexing",
+                "message": f"Chunk {chunk_idx + 1}/{len(chunks_with_summaries)} embedded",
+                "indexing_log": {
+                    "thread_id": thread_id,
+                    "chunk_index": chunk_idx + 1,
+                    "total_chunks": len(chunks_with_summaries),
+                    "embeddings_created": stats['embeddings_created'],
+                    "status": "chunk_embedded"
+                }
+            })
+            
             # Create embeddings for individual messages (for backward compatibility)
             # Include sender in text for better RAG search
             chunk_message_ids = chunk.get('message_ids', [])
-            for msg_record in message_records:
+            for msg_idx_in_chunk, msg_record in enumerate(message_records):
                 if msg_record['db_message'].id in chunk_message_ids:
                     parsed = msg_record['parsed']
                     sender = msg_record['db_message'].sender
@@ -238,6 +366,20 @@ def index_gmail_thread(
                     )
                     db.flush()
                     stats['embeddings_created'] += 1
+                    
+                    # Emit progress for message embedding (every 3rd message to avoid spam)
+                    if msg_idx_in_chunk % 3 == 0:
+                        _emit_progress("indexing", {
+                            "step": "indexing",
+                            "message": f"Embedding messages in chunk {chunk_idx + 1}...",
+                            "indexing_log": {
+                                "thread_id": thread_id,
+                                "chunk_index": chunk_idx + 1,
+                                "message_in_chunk": msg_idx_in_chunk + 1,
+                                "sender": sender[:50] if sender else "unknown",
+                                "status": "embedding_message"
+                            }
+                        })
         
         db.commit()
         

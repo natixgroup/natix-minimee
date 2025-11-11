@@ -14,6 +14,7 @@ import {
   AlertCircle,
   Code,
   StopCircle,
+  GripVertical,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
@@ -55,7 +56,50 @@ export function IngestionProgressFloating({
   const [showLlmLogs, setShowLlmLogs] = useState(false);
   const [importLogs, setImportLogs] = useState<any[]>([]);
   const [showImportLogs, setShowImportLogs] = useState(true); // Show by default for Gmail/WhatsApp
+  const [size, setSize] = useState({ width: 384, height: 400 }); // Default size (w-96 = 384px)
+  const [isResizing, setIsResizing] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  
+  // Handle resizing
+  useEffect(() => {
+    if (!isResizing) return;
+    
+    const initialSize = { ...size };
+    const initialMouse = { x: 0, y: 0 };
+    let isInitialized = false;
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!cardRef.current) return;
+      
+      if (!isInitialized) {
+        initialMouse.x = e.clientX;
+        initialMouse.y = e.clientY;
+        isInitialized = true;
+        return;
+      }
+      
+      const deltaX = initialMouse.x - e.clientX; // Negative when dragging left (increases width)
+      const deltaY = initialMouse.y - e.clientY; // Negative when dragging up (increases height)
+      
+      const newWidth = Math.max(300, Math.min(800, initialSize.width + deltaX));
+      const newHeight = Math.max(200, Math.min(800, initialSize.height + deltaY));
+      
+      setSize({ width: newWidth, height: newHeight });
+    };
+    
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+    
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -144,37 +188,36 @@ export function IngestionProgressFloating({
               onProgressUpdate(progressData);
             }
 
-            // Add import logs for Gmail/WhatsApp
-            // Debug: log to console to see what we receive
-            if (progressData.thread_log || progressData.message_log || progressData.indexing_log) {
-              console.log("[ImportLogs] Received log:", {
-                thread_log: progressData.thread_log,
-                message_log: progressData.message_log,
-                indexing_log: progressData.indexing_log
-              });
-              
-              const logEntry = {
-                timestamp: new Date().toISOString(),
-                type: progressData.thread_log ? "thread" : progressData.message_log ? "message" : "indexing",
-                data: progressData.thread_log || progressData.message_log || progressData.indexing_log
-              };
-              setImportLogs((prev) => [...prev, logEntry].slice(-100)); // Keep last 100 logs
-              
-              // Auto-scroll to bottom
-              setTimeout(() => {
-                logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-              }, 100);
-            } else {
-              // Debug: log when we receive progress but no logs
-              console.log("[ImportLogs] Progress received but no logs:", {
-                step: progressData.step,
-                message: progressData.message,
-                has_thread_log: !!progressData.thread_log,
-                has_message_log: !!progressData.message_log,
-                has_indexing_log: !!progressData.indexing_log,
-                keys: Object.keys(progressData)
-              });
-            }
+                 // Add import logs for Gmail/WhatsApp
+                 // Always add indexing_log if present (for real-time message processing)
+                 if (progressData.indexing_log) {
+                   const logEntry = {
+                     timestamp: new Date().toISOString(),
+                     type: "indexing",
+                     data: progressData.indexing_log
+                   };
+                   setImportLogs((prev) => [...prev, logEntry].slice(-200)); // Keep last 200 logs for detailed indexing
+                   
+                   // Auto-scroll to bottom
+                   setTimeout(() => {
+                     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                   }, 50); // Faster scroll for real-time updates
+                 }
+                 
+                 // Also handle thread_log and message_log (for fetching phase)
+                 if (progressData.thread_log || progressData.message_log) {
+                   const logEntry = {
+                     timestamp: new Date().toISOString(),
+                     type: progressData.thread_log ? "thread" : "message",
+                     data: progressData.thread_log || progressData.message_log
+                   };
+                   setImportLogs((prev) => [...prev, logEntry].slice(-200)); // Keep last 200 logs
+                   
+                   // Auto-scroll to bottom
+                   setTimeout(() => {
+                     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                   }, 50);
+                 }
 
             // Update status based on step
             if (progressData.step === "complete") {
@@ -289,8 +332,22 @@ export function IngestionProgressFloating({
   };
 
   return (
-    <Card className="fixed bottom-4 right-4 w-96 z-50 shadow-lg">
-      <CardHeader className="pb-2">
+    <Card 
+      ref={cardRef}
+      className="fixed bottom-4 right-4 z-50 shadow-lg"
+      style={{ width: `${size.width}px`, height: `${size.height}px` }}
+    >
+      <CardHeader className="pb-2 relative">
+        {/* Resize handle - top left */}
+        <div
+          className="absolute top-0 left-0 w-4 h-4 cursor-nwse-resize flex items-center justify-center opacity-50 hover:opacity-100 transition-opacity z-10"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setIsResizing(true);
+          }}
+        >
+          <GripVertical className="w-3 h-3 rotate-45" />
+        </div>
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium">{fileName}</CardTitle>
           <div className="flex items-center gap-2">
@@ -323,7 +380,7 @@ export function IngestionProgressFloating({
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 flex flex-col" style={{ height: `calc(100% - 4rem)`, overflow: "hidden" }}>
         <div className="space-y-2">
           <div className="flex items-center justify-between text-xs">
             <span className="text-muted-foreground">
@@ -432,27 +489,112 @@ export function IngestionProgressFloating({
                             </div>
                           </div>
                         );
-                      } else if (log.type === "indexing") {
-                        return (
-                          <div key={idx} className="text-green-400">
-                            <span className="text-green-500">[INDEX]</span>{" "}
-                            <span className="font-semibold">{data.subject}</span>
-                            {data.status === "completed" ? (
-                              <div className="text-green-300 pl-4 text-[10px]">
-                                ✓ {data.chunks} chunks, {data.embeddings} embeddings
-                              </div>
-                            ) : data.status === "failed" ? (
-                              <div className="text-red-400 pl-4 text-[10px]">
-                                ✗ Error: {data.error}
-                              </div>
-                            ) : (
-                              <div className="text-green-300 pl-4 text-[10px]">
-                                Indexing...
-                              </div>
-                            )}
-                          </div>
-                        );
-                      }
+                 } else if (log.type === "indexing") {
+                   // Handle different indexing statuses
+                   if (data.status === "processing" || data.status === "processed") {
+                     return (
+                       <div key={idx} className="text-green-400">
+                         <span className="text-green-500">[MSG]</span>{" "}
+                         <span className="text-green-300">{data.from}</span>
+                         <div className="text-green-300 pl-4 text-[10px]">
+                           {data.subject}
+                         </div>
+                         <div className="text-green-400 pl-4 text-[10px] italic">
+                           {data.message_index}/{data.total_messages} messages
+                         </div>
+                       </div>
+                     );
+                   } else if (data.status === "summarizing" || data.status === "summaries_complete" || data.status === "summaries_skipped") {
+                     const formatTime = (seconds: number) => {
+                       if (seconds < 60) return `${seconds}s`;
+                       const minutes = Math.floor(seconds / 60);
+                       const secs = seconds % 60;
+                       return `${minutes}m ${secs}s`;
+                     };
+                     
+                     return (
+                       <div key={idx} className="text-green-400">
+                         <span className="text-green-500">[SUMMARY]</span>{" "}
+                         <span className="text-green-300">
+                           {data.status === "summaries_complete" 
+                             ? `✓ Generated ${data.summaries_count} summaries`
+                             : data.status === "summaries_skipped"
+                             ? `⚠ Skipped summaries${data.error ? `: ${data.error}` : ''}`
+                             : `Generating summaries for ${data.chunks_count} chunks... (${data.current_summary || 0}/${data.total_summaries || data.chunks_count})`}
+                         </span>
+                         {data.status === "summarizing" && data.elapsed_seconds !== undefined && (
+                           <div className="text-green-400 pl-4 text-[10px] italic">
+                             Elapsed: {formatTime(data.elapsed_seconds)}
+                           </div>
+                         )}
+                       </div>
+                     );
+                   } else if (data.status === "embedding" || data.status === "embedding_chunk" || data.status === "chunk_embedded") {
+                     return (
+                       <div key={idx} className="text-green-400">
+                         <span className="text-green-500">[EMBED]</span>{" "}
+                         {data.status === "embedding_chunk" ? (
+                           <>
+                             <span className="text-green-300">Chunk {data.chunk_index}/{data.total_chunks}</span>
+                             <div className="text-green-300 pl-4 text-[10px]">
+                               {data.message_count} messages
+                             </div>
+                           </>
+                         ) : data.status === "chunk_embedded" ? (
+                           <>
+                             <span className="text-green-300">✓ Chunk {data.chunk_index} embedded</span>
+                             <div className="text-green-300 pl-4 text-[10px]">
+                               {data.embeddings_created} embeddings total
+                             </div>
+                           </>
+                         ) : (
+                           <span className="text-green-300">Generating embeddings for {data.chunks_count} chunks...</span>
+                         )}
+                       </div>
+                     );
+                   } else if (data.status === "embedding_message") {
+                     return (
+                       <div key={idx} className="text-green-400">
+                         <span className="text-green-500">[MSG-EMBED]</span>{" "}
+                         <span className="text-green-300">{data.sender}</span>
+                         <div className="text-green-300 pl-4 text-[10px]">
+                           Chunk {data.chunk_index}, message {data.message_in_chunk}
+                         </div>
+                       </div>
+                     );
+                   } else if (data.status === "completed") {
+                     return (
+                       <div key={idx} className="text-green-400">
+                         <span className="text-green-500">[INDEX]</span>{" "}
+                         <span className="font-semibold">{data.subject}</span>
+                         <div className="text-green-300 pl-4 text-[10px]">
+                           ✓ {data.chunks} chunks, {data.embeddings} embeddings
+                         </div>
+                       </div>
+                     );
+                   } else if (data.status === "failed") {
+                     return (
+                       <div key={idx} className="text-red-400">
+                         <span className="text-red-500">[INDEX]</span>{" "}
+                         <span className="font-semibold">{data.subject}</span>
+                         <div className="text-red-300 pl-4 text-[10px]">
+                           ✗ Error: {data.error}
+                         </div>
+                       </div>
+                     );
+                   } else {
+                     // Default indexing log
+                     return (
+                       <div key={idx} className="text-green-400">
+                         <span className="text-green-500">[INDEX]</span>{" "}
+                         <span className="font-semibold">{data.subject || "Thread"}</span>
+                         <div className="text-green-300 pl-4 text-[10px]">
+                           Indexing...
+                         </div>
+                       </div>
+                     );
+                   }
+                 }
                       return null;
                     })
                   )}

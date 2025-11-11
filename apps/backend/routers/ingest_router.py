@@ -421,6 +421,65 @@ async def upload_whatsapp_stream(
     )
 
 
+@router.get("/ingest/jobs")
+async def get_ingestion_jobs(
+    source: Optional[str] = Query(None, description="Filter by source: whatsapp, gmail"),
+    user_id: int = Query(1, description="User ID"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get ingestion jobs history
+    Returns jobs with their metadata and stats
+    """
+    query = db.query(IngestionJob).filter(IngestionJob.user_id == user_id)
+    
+    if source:
+        query = query.filter(IngestionJob.progress['source'].astext == source)
+    
+    total = query.count()
+    jobs = query.order_by(IngestionJob.created_at.desc()).offset(offset).limit(limit).all()
+    
+    # Build response with stats
+    jobs_data = []
+    for job in jobs:
+        job_source = job.progress.get('source') if job.progress else None
+        
+        # Get stats from progress or calculate
+        stats = {}
+        if job.progress:
+            stats = {
+                "messages_count": 0,
+                "embeddings_count": 0,
+                "threads_count": 0,
+                "conversations_count": 0,
+            }
+            
+            # Try to get stats from progress
+            if 'stats' in job.progress:
+                stats.update(job.progress['stats'])
+        
+        jobs_data.append({
+            "id": job.id,
+            "source": job_source,
+            "status": job.status,
+            "conversation_id": job.conversation_id,
+            "created_at": job.created_at.isoformat(),
+            "updated_at": job.updated_at.isoformat(),
+            "error": job.error,
+            "progress": job.progress,
+            "stats": stats
+        })
+    
+    return {
+        "items": jobs_data,
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+
 @router.get("/ingest/whatsapp-history")
 async def get_whatsapp_import_history(
     user_id: Optional[int] = Query(None, description="Filter by user_id"),
@@ -431,6 +490,7 @@ async def get_whatsapp_import_history(
     """
     Get import history for WhatsApp conversations
     Returns aggregated stats per conversation_id
+    DEPRECATED: Use /ingest/jobs?source=whatsapp instead
     """
     # Base query: messages with source='whatsapp'
     query = db.query(Message).filter(Message.source == "whatsapp")
@@ -801,6 +861,252 @@ async def cancel_ingestion_job(
         )
     
     return {"message": "Job cancelled successfully", "job_id": job_id}
+
+
+@router.delete("/ingest/jobs/{job_id}")
+async def delete_ingestion_job(
+    job_id: int,
+    user_id: int = Query(1, description="User ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete an ingestion job and all associated data (messages, embeddings, contacts)
+    """
+    from services.logs_service import log_to_db
+    from models import ActionLog, GmailThread
+    
+    job = db.query(IngestionJob).filter(
+        IngestionJob.id == job_id,
+        IngestionJob.user_id == user_id
+    ).first()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job_source = job.progress.get('source') if job.progress else None
+    conversation_id = job.conversation_id
+    
+    deleted_messages = 0
+    deleted_embeddings = 0
+    deleted_contacts = 0
+    deleted_threads = 0
+    
+    try:
+        # If WhatsApp job, delete associated messages and conversations
+        if job_source == "whatsapp" and conversation_id:
+            # Get all message IDs from this conversation
+            messages = db.query(Message).filter(
+                Message.conversation_id == conversation_id,
+                Message.source == "whatsapp",
+                Message.user_id == user_id
+            ).all()
+            message_ids = [msg.id for msg in messages]
+            
+            if message_ids:
+                # Delete ActionLogs first
+                db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
+                
+                # Delete embeddings linked to these messages
+                deleted_embeddings = db.query(Embedding).filter(
+                    Embedding.message_id.in_(message_ids)
+                ).delete(synchronize_session=False)
+                
+                # Delete messages
+                deleted_messages = db.query(Message).filter(
+                    Message.id.in_(message_ids)
+                ).delete(synchronize_session=False)
+                
+                # Delete contact if exists
+                deleted_contacts = db.query(Contact).filter(
+                    Contact.conversation_id == conversation_id,
+                    Contact.user_id == user_id
+                ).delete(synchronize_session=False)
+        
+        # If Gmail job, delete associated threads and messages
+        elif job_source == "gmail":
+            # Get thread IDs from job progress
+            thread_ids = []
+            if job.progress and 'stats' in job.progress:
+                stats = job.progress['stats']
+                if 'thread_ids' in stats:
+                    thread_ids = stats['thread_ids']
+                elif 'thread_count' in stats:
+                    # If we have thread_count but not IDs, we need to find threads by user
+                    threads = db.query(GmailThread).filter(
+                        GmailThread.user_id == user_id
+                    ).all()
+                    thread_ids = [t.id for t in threads]
+            
+            if thread_ids:
+                # Get all messages from these threads
+                messages = db.query(Message).filter(
+                    Message.source == "gmail",
+                    Message.user_id == user_id,
+                    Message.conversation_id.in_([str(tid) for tid in thread_ids])
+                ).all()
+                message_ids = [msg.id for msg in messages]
+                
+                if message_ids:
+                    # Delete ActionLogs
+                    db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
+                    
+                    # Delete embeddings
+                    deleted_embeddings = db.query(Embedding).filter(
+                        Embedding.message_id.in_(message_ids)
+                    ).delete(synchronize_session=False)
+                    
+                    # Delete messages
+                    deleted_messages = db.query(Message).filter(
+                        Message.id.in_(message_ids)
+                    ).delete(synchronize_session=False)
+                
+                # Delete Gmail threads
+                deleted_threads = db.query(GmailThread).filter(
+                    GmailThread.id.in_(thread_ids),
+                    GmailThread.user_id == user_id
+                ).delete(synchronize_session=False)
+        
+        # Delete the job itself
+        db.delete(job)
+        db.commit()
+        
+        log_to_db(
+            db,
+            "INFO",
+            f"Deleted ingestion job {job_id} ({job_source}): {deleted_messages} messages, {deleted_embeddings} embeddings, {deleted_contacts} contacts, {deleted_threads} threads",
+            service="ingestion"
+        )
+        
+        return {
+            "message": f"Job {job_id} deleted successfully",
+            "deleted_messages": deleted_messages,
+            "deleted_embeddings": deleted_embeddings,
+            "deleted_contacts": deleted_contacts,
+            "deleted_threads": deleted_threads
+        }
+    
+    except Exception as e:
+        db.rollback()
+        log_to_db(db, "ERROR", f"Error deleting job {job_id}: {str(e)}", service="ingestion")
+        raise HTTPException(status_code=500, detail=f"Error deleting job: {str(e)}")
+
+
+@router.delete("/ingest/jobs")
+async def delete_all_ingestion_jobs(
+    source: str = Query(..., description="Source to delete: whatsapp or gmail"),
+    user_id: int = Query(1, description="User ID"),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete all ingestion jobs for a specific source and all associated data
+    """
+    from services.logs_service import log_to_db
+    from models import ActionLog, GmailThread
+    
+    # Get all jobs for this source
+    jobs = db.query(IngestionJob).filter(
+        IngestionJob.user_id == user_id,
+        IngestionJob.progress['source'].astext == source
+    ).all()
+    
+    if not jobs:
+        return {
+            "message": f"No {source} jobs found",
+            "deleted_jobs": 0,
+            "deleted_messages": 0,
+            "deleted_embeddings": 0
+        }
+    
+    total_deleted_messages = 0
+    total_deleted_embeddings = 0
+    total_deleted_contacts = 0
+    total_deleted_threads = 0
+    
+    try:
+        # Collect all conversation_ids and thread_ids
+        conversation_ids = set()
+        thread_ids = set()
+        
+        for job in jobs:
+            if job.conversation_id:
+                conversation_ids.add(job.conversation_id)
+            if job.progress and 'stats' in job.progress:
+                stats = job.progress['stats']
+                if 'thread_ids' in stats:
+                    thread_ids.update(stats['thread_ids'])
+        
+        # Delete data based on source
+        if source == "whatsapp" and conversation_ids:
+            # Get all message IDs
+            messages = db.query(Message).filter(
+                Message.conversation_id.in_(conversation_ids),
+                Message.source == "whatsapp",
+                Message.user_id == user_id
+            ).all()
+            message_ids = [msg.id for msg in messages]
+            
+            if message_ids:
+                db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
+                total_deleted_embeddings = db.query(Embedding).filter(
+                    Embedding.message_id.in_(message_ids)
+                ).delete(synchronize_session=False)
+                total_deleted_messages = db.query(Message).filter(
+                    Message.id.in_(message_ids)
+                ).delete(synchronize_session=False)
+                total_deleted_contacts = db.query(Contact).filter(
+                    Contact.conversation_id.in_(conversation_ids),
+                    Contact.user_id == user_id
+                ).delete(synchronize_session=False)
+        
+        elif source == "gmail" and thread_ids:
+            # Get all messages from these threads
+            messages = db.query(Message).filter(
+                Message.source == "gmail",
+                Message.user_id == user_id,
+                Message.conversation_id.in_([str(tid) for tid in thread_ids])
+            ).all()
+            message_ids = [msg.id for msg in messages]
+            
+            if message_ids:
+                db.query(ActionLog).filter(ActionLog.message_id.in_(message_ids)).delete(synchronize_session=False)
+                total_deleted_embeddings = db.query(Embedding).filter(
+                    Embedding.message_id.in_(message_ids)
+                ).delete(synchronize_session=False)
+                total_deleted_messages = db.query(Message).filter(
+                    Message.id.in_(message_ids)
+                ).delete(synchronize_session=False)
+                total_deleted_threads = db.query(GmailThread).filter(
+                    GmailThread.id.in_(thread_ids),
+                    GmailThread.user_id == user_id
+                ).delete(synchronize_session=False)
+        
+        # Delete all jobs
+        deleted_jobs_count = db.query(IngestionJob).filter(
+            IngestionJob.id.in_([job.id for job in jobs])
+        ).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        log_to_db(
+            db,
+            "INFO",
+            f"Deleted all {source} jobs ({deleted_jobs_count} jobs): {total_deleted_messages} messages, {total_deleted_embeddings} embeddings",
+            service="ingestion"
+        )
+        
+        return {
+            "message": f"Deleted {deleted_jobs_count} {source} jobs and all associated data",
+            "deleted_jobs": deleted_jobs_count,
+            "deleted_messages": total_deleted_messages,
+            "deleted_embeddings": total_deleted_embeddings,
+            "deleted_contacts": total_deleted_contacts,
+            "deleted_threads": total_deleted_threads
+        }
+    
+    except Exception as e:
+        db.rollback()
+        log_to_db(db, "ERROR", f"Error deleting all {source} jobs: {str(e)}", service="ingestion")
+        raise HTTPException(status_code=500, detail=f"Error deleting jobs: {str(e)}")
 
 
 @router.websocket("/ingest/ws/{job_id}")

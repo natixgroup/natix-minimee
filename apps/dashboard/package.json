@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbo -p 3002",
+    "dev": "next dev --turbo",
     "build": "next build",
-    "start": "next start -p 3002",
+    "start": "next start",
     "lint": "eslint .",
     "type-check": "tsc --noEmit",
     "test": "echo \"No tests configured yet\" && exit 0"

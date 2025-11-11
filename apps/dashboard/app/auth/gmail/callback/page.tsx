@@ -20,14 +20,14 @@ export default function GmailCallbackPage() {
     if (error) {
       setStatus("error");
       setMessage("OAuth authorization was denied or failed.");
-      setTimeout(() => router.push("/settings"), 3000);
+      setTimeout(() => router.push("/settings?tab=integrations"), 3000);
       return;
     }
 
     if (!code || !state) {
       setStatus("error");
       setMessage("Missing OAuth code or state parameter.");
-      setTimeout(() => router.push("/settings"), 3000);
+      setTimeout(() => router.push("/settings?tab=integrations"), 3000);
       return;
     }
 
@@ -37,13 +37,13 @@ export default function GmailCallbackPage() {
         const result = await api.handleGmailCallback(code, state);
         setStatus("success");
         setMessage("Gmail successfully connected!");
-        setTimeout(() => router.push("/settings"), 2000);
+        setTimeout(() => router.push("/settings?tab=integrations"), 2000);
       } catch (err) {
         setStatus("error");
         setMessage(
           err instanceof Error ? err.message : "Failed to complete Gmail OAuth"
         );
-        setTimeout(() => router.push("/settings"), 3000);
+        setTimeout(() => router.push("/settings?tab=integrations"), 3000);
       }
     };
 

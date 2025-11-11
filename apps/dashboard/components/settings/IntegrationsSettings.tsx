@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { GmailConnect } from "../gmail/GmailConnect";
 import { WhatsAppUserConnect } from "../whatsapp/WhatsAppUserConnect";
 import { WhatsAppUpload } from "../upload/WhatsAppUpload";
-import { WhatsAppImportHistory } from "./WhatsAppImportHistory";
+import { ImportHistory } from "./ImportHistory";
 import { OpenAIConfig } from "./OpenAIConfig";
 import { Database, MessageSquare, KeyRound, History } from "lucide-react";
 
@@ -61,23 +61,7 @@ export function IntegrationsSettings() {
         </div>
 
         {/* Import History */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <History className="h-5 w-5" />
-                Historique des importations
-              </CardTitle>
-              <Badge variant="secondary">Historique</Badge>
-            </div>
-            <CardDescription>
-              Dernières importations WhatsApp avec statistiques détaillées
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <WhatsAppImportHistory />
-          </CardContent>
-        </Card>
+        <ImportHistory />
       </div>
 
       {/* Canaux de communication */}

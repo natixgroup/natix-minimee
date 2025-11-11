@@ -437,6 +437,22 @@ def fetch_gmail_threads_sync(
             if messages:
                 try:
                     thread_obj = stored_threads[idx]
+                    # Create a wrapper callback that preserves global thread progress
+                    def thread_indexing_callback(step: str, data: Dict):
+                        """Wrapper that emits indexing logs without changing global progress"""
+                        # Only emit indexing_log, don't change current/total which are thread-based
+                        if 'indexing_log' in data:
+                            _emit_progress("indexing", {
+                                "step": "indexing",
+                                "message": f"Indexing thread {idx + 1}/{len(stored_threads)}...",
+                                "current": idx + 1,  # Keep thread-based progress
+                                "total": len(stored_threads),  # Keep thread-based progress
+                                "indexing_log": data.get('indexing_log')
+                            })
+                        else:
+                            # For other logs, just forward
+                            _emit_progress(step, data)
+                    
                     _emit_progress("indexing", {
                         "step": "indexing",
                         "message": f"Indexing thread {idx + 1}/{len(stored_threads)}...",
@@ -451,7 +467,7 @@ def fetch_gmail_threads_sync(
                         }
                     })
                     
-                    index_stats = index_gmail_thread(db, thread_id, messages, user_id)
+                    index_stats = index_gmail_thread(db, thread_id, messages, user_id, progress_callback=thread_indexing_callback)
                     chunks = index_stats.get('chunks_created', 0)
                     embeddings = index_stats.get('embeddings_created', 0)
                     stats['chunks_created'] += chunks
