@@ -6,40 +6,25 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Upload, CheckCircle2, Loader2, AlertCircle, FileText, MessageSquare, Layers, Sparkles, Tag } from "lucide-react";
-import { api, UploadStats } from "@/lib/api";
+import { Upload, CheckCircle2, Loader2, AlertCircle, FileText } from "lucide-react";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
-
-interface UploadResult {
-  message: string;
-  conversation_id: string;
-  stats: UploadStats;
-  warnings?: string[];
-}
-
-type UploadStep = "idle" | "uploading" | "parsing" | "chunking" | "embedding" | "summarizing" | "complete" | "error";
-
-interface ProgressData {
-  step?: string;
-  message?: string;
-  current?: number;
-  total?: number;
-  embeddings_created?: number;
-  percent?: number;
-}
+import { ContactFormDialog } from "./ContactFormDialog";
 
 export function WhatsAppUpload() {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadSuccess, setUploadSuccess] = useState(false);
-  const [uploadStep, setUploadStep] = useState<UploadStep>("idle");
-  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
+  const [isDetecting, setIsDetecting] = useState(false);
+  const [showContactForm, setShowContactForm] = useState(false);
+  const [contactData, setContactData] = useState<any>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [contactId, setContactId] = useState<number | null>(null);
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [progressData, setProgressData] = useState<ProgressData | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const userId = 1; // TODO: Get from auth
 
   const validateAndSetFile = (selectedFile: File | null) => {
     if (!selectedFile) {
@@ -54,10 +39,10 @@ export function WhatsAppUpload() {
     }
 
     setFile(selectedFile);
-    setUploadSuccess(false);
-    setUploadResult(null);
     setError(null);
-    setUploadStep("idle");
+    setContactData(null);
+    setShowContactForm(false);
+    setActiveJobId(null);
     return true;
   };
 
@@ -66,167 +51,120 @@ export function WhatsAppUpload() {
     validateAndSetFile(selectedFile || null);
   };
 
-  const handleUpload = () => {
+  const handleUpload = async () => {
     if (!file) {
       toast.error("Please select a file first");
       return;
     }
 
-    setIsUploading(true);
-    setUploadStep("uploading");
+    setIsDetecting(true);
     setError(null);
-    setUploadResult(null);
-    setProgressData(null);
 
-    api.uploadWhatsAppWithProgress(
-      file,
-      1, // TODO: Get userId from auth
-      (update) => {
-        if (update.type === "upload") {
-          // Handle upload progress
-          const uploadPercent = update.uploadPercent || update.data?.percent || 0;
-          setUploadStep("uploading");
-          setProgressData({
-            step: "uploading",
-            message: update.data?.message || `Uploading file... ${uploadPercent}%`,
-            percent: uploadPercent,
-            current: uploadPercent,
-            total: 100,
-          });
-          
-          // Once upload is complete, prepare for next step (but don't force it - wait for real SSE events)
-          if (uploadPercent >= 100) {
-            // Set a minimal state while waiting for first progress event
-            // Don't use setTimeout - let real SSE events drive the state
-            setUploadStep("parsing");
-            setProgressData({
-              step: "parsing",
-              message: "File uploaded. Starting processing...",
-              percent: 0,
-            });
-          }
-        } else if (update.type === "progress") {
-          // Update step based on progress data
-          const step = update.data?.step || update.step || "parsing";
-          
-          // Map step names to our UploadStep type
-          let mappedStep: UploadStep = "parsing";
-          if (step === "parsing" || step === "saving_messages") {
-            mappedStep = "parsing";
-          } else if (step === "chunking") {
-            mappedStep = "chunking";
-          } else if (step === "embedding") {
-            mappedStep = "embedding";
-          } else if (step === "summarizing") {
-            mappedStep = "summarizing";
-          }
-          
-          setUploadStep(mappedStep);
-          
-          // Calculate percent from current/total if not provided
-          let percent = update.data?.percent;
-          if (percent === undefined && update.data?.current !== undefined && update.data?.total !== undefined && update.data.total > 0) {
-            percent = Math.round((update.data.current / update.data.total) * 100);
-          }
-          
-          setProgressData({
-            ...update.data,
-            step: step,
-            percent: percent,
-          });
-          
-          // Log progress for debugging
-          if (update.data) {
-            const { current, total, message, embeddings_created } = update.data;
-            if (current !== undefined && total !== undefined) {
-              console.log(`Progress: ${message || step} - ${current}/${total} (${percent || 0}%)`);
-            }
-            if (embeddings_created !== undefined) {
-              console.log(`Embeddings created: ${embeddings_created}`);
-            }
-          }
-        } else if (update.type === "complete") {
-          setUploadStep("complete");
-          const result: UploadResult = {
-            message: update.message || "Successfully imported",
-            conversation_id: update.conversation_id || "",
-            stats: update.stats || {
-              messages_created: 0,
-              chunks_created: 0,
-              summaries_created: 0,
-              embeddings_created: 0,
-            },
-            warnings: update.warnings,
-          };
-          setUploadResult(result);
-          setUploadSuccess(true);
-          setIsUploading(false);
-          setFile(null);
-          
-          // Invalidate WhatsApp import history to refresh the list
-          queryClient.invalidateQueries({ 
-            queryKey: ["whatsapp-import-history"],
-            exact: false // Invalidate all queries starting with this key
-          });
-          
-          // Show success toast
-          const stats = result.stats;
-          const summary = `${stats.messages_created} messages, ${stats.chunks_created} chunks, ${stats.embeddings_created} embeddings`;
-          toast.success(`WhatsApp conversation imported: ${summary}`);
-        } else if (update.type === "error") {
-          setUploadStep("error");
-          const errorMessage = update.message || "Upload failed";
-          setError(errorMessage);
-          setIsUploading(false);
-          toast.error(errorMessage);
-        }
-      },
-      (error) => {
-        setUploadStep("error");
-        const errorMessage = error.message || "Upload failed";
-        setError(errorMessage);
-        setIsUploading(false);
-        toast.error(errorMessage);
+    try {
+      // Step 1: Detect contact
+      const detected = await api.detectContact(file, userId);
+      setContactData(detected);
+      
+      // Generate conversation_id
+      const convId = `whatsapp_${Date.now()}`;
+      setConversationId(convId);
+      
+      // Step 2: Show contact form
+      setShowContactForm(true);
+    } catch (error: any) {
+      // Extract error message properly
+      let errorMessage = "Failed to detect contact";
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else if (error?.message) {
+        errorMessage = error.message;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else {
+        errorMessage = JSON.stringify(error);
       }
-    );
-  };
-
-  const getStepLabel = (step: UploadStep, percent?: number) => {
-    const baseLabel = (() => {
-      switch (step) {
-        case "uploading":
-          return "Uploading file";
-        case "parsing":
-          return "Parsing messages";
-        case "chunking":
-          return "Creating chunks";
-        case "embedding":
-          return "Generating embeddings";
-        case "summarizing":
-          return "Generating summaries";
-        case "complete":
-          return "Complete!";
-        case "error":
-          return "Error occurred";
-        default:
-          return "";
-      }
-    })();
-    
-    // Add percentage to label for better visibility
-    if (percent !== undefined && step !== "complete" && step !== "error") {
-      return `${baseLabel}... ${percent}%`;
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsDetecting(false);
     }
-    
-    return baseLabel + (step !== "complete" && step !== "error" ? "..." : "");
   };
+
+  const handleContactSave = async (formData: any) => {
+    if (!conversationId) {
+      toast.error("No conversation ID");
+      return;
+    }
+
+    try {
+      // Save contact
+      const saved = await api.saveContact({
+        user_id: userId,
+        conversation_id: conversationId,
+        ...formData,
+      });
+      
+      setContactId(saved.id);
+      setShowContactForm(false);
+      
+      // Step 3: Start async ingestion job
+      const job = await api.uploadWhatsAppAsync(
+        file!,
+        userId,
+        conversationId,
+        saved.id
+      );
+      
+      const jobId = job.job_id;
+      setActiveJobId(jobId);
+      
+      // Store in localStorage for global component
+      localStorage.setItem("activeIngestionJobId", jobId.toString());
+      
+      // Dispatch custom event for same-tab communication
+      window.dispatchEvent(new CustomEvent("ingestionJobStart", { detail: { jobId } }));
+      
+      // Invalidate queries
+      queryClient.invalidateQueries({
+        queryKey: ["whatsapp-import-history"],
+        exact: false,
+      });
+    } catch (error: any) {
+      // Extract error message properly
+      let errorMessage = "Failed to start import";
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      } else if (error?.message) {
+        errorMessage = error.message;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else {
+        errorMessage = JSON.stringify(error);
+      }
+      setError(errorMessage);
+      toast.error(errorMessage);
+    }
+  };
+
+  const handleCloseProgress = () => {
+    setActiveJobId(null);
+    localStorage.removeItem("activeIngestionJobId");
+    setFile(null);
+    setContactData(null);
+    setConversationId(null);
+    setContactId(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
 
   const handleChooseFile = (e?: React.MouseEvent) => {
     if (e) {
       e.preventDefault();
       e.stopPropagation();
     }
-    if (fileInputRef.current && !isUploading) {
+    if (fileInputRef.current && !isDetecting && !activeJobId) {
       // Reset input to allow selecting same file again
       fileInputRef.current.value = "";
       // Use setTimeout to ensure the click happens after state updates
@@ -276,7 +214,7 @@ export function WhatsAppUpload() {
           accept=".txt"
           onChange={handleFileChange}
           className="absolute opacity-0 w-0 h-0 pointer-events-none"
-          disabled={isUploading}
+          disabled={isDetecting || !!activeJobId}
           id="whatsapp-file-input"
         />
         
@@ -290,7 +228,7 @@ export function WhatsAppUpload() {
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (!isUploading) {
+            if (!isDetecting && !activeJobId) {
               handleChooseFile();
             }
           }}
@@ -301,12 +239,12 @@ export function WhatsAppUpload() {
               ? "border-primary bg-primary/5 scale-[1.02]" 
               : "border-muted-foreground/25 hover:border-muted-foreground/50"
             }
-            ${isUploading ? "opacity-50 cursor-not-allowed pointer-events-none" : ""}
+            ${isDetecting ? "opacity-50 cursor-not-allowed pointer-events-none" : ""}
           `}
           role="button"
-          tabIndex={isUploading ? -1 : 0}
+          tabIndex={isDetecting || activeJobId ? -1 : 0}
           onKeyDown={(e) => {
-            if ((e.key === 'Enter' || e.key === ' ') && !isUploading) {
+            if ((e.key === 'Enter' || e.key === ' ') && !isDetecting) {
               e.preventDefault();
               handleChooseFile();
             }
@@ -339,7 +277,7 @@ export function WhatsAppUpload() {
                       fileInputRef.current.value = "";
                     }
                   }}
-                  disabled={isUploading}
+                  disabled={isDetecting || !!activeJobId}
                   className="text-xs"
                 >
                   Remove file
@@ -363,7 +301,7 @@ export function WhatsAppUpload() {
                     e.preventDefault();
                     handleChooseFile(e);
                   }}
-                  disabled={isUploading}
+                  disabled={isDetecting || !!activeJobId}
                   size="sm"
                 >
                   Browse Files
@@ -374,196 +312,53 @@ export function WhatsAppUpload() {
         </div>
       </div>
 
-      {/* Progress indicator with detailed info */}
-      {isUploading && uploadStep !== "idle" && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="space-y-3">
-              <div className="flex items-center gap-3">
-                <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                <div className="flex-1">
-                  <div className="flex items-center justify-between">
-                    <p className="font-medium">
-                      {getStepLabel(
-                        uploadStep, 
-                        progressData?.percent,
-                        progressData?.current,
-                        progressData?.total
-                      )}
-                    </p>
-                    {(progressData?.percent !== undefined || 
-                      (progressData?.current !== undefined && progressData?.total !== undefined)) && (
-                      <p className="font-semibold text-primary text-lg">
-                        {progressData?.percent !== undefined 
-                          ? `${progressData.percent}%`
-                          : progressData?.total !== undefined && progressData?.total > 0
-                          ? `${Math.round(((progressData.current || 0) / progressData.total) * 100)}%`
-                          : "0%"}
-                      </p>
-                    )}
-                  </div>
-                  {progressData?.message && (
-                    <p className="text-sm text-muted-foreground mt-1">
-                      {progressData.message}
-                    </p>
-                  )}
-                </div>
-              </div>
-              
-              {/* Detailed progress counters */}
-              {progressData && (
-                <div className="space-y-2 pl-8 border-l-2 border-primary/20">
-                  {progressData.current !== undefined && progressData.total !== undefined && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">
-                        {progressData.step === "saving_messages" && "Messages"}
-                        {progressData.step === "embedding" && "Chunks"}
-                        {progressData.step === "summarizing" && "Summaries"}
-                        {!progressData.step && "Progress"}
-                      </span>
-                      <span className="text-sm font-medium">
-                        {progressData.current} / {progressData.total}
-                      </span>
-                    </div>
-                  )}
-                  
-                  {progressData.embeddings_created !== undefined && (
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Embeddings vectorized</span>
-                      <span className="text-sm font-medium">
-                        {progressData.embeddings_created}
-                      </span>
-                    </div>
-                  )}
-                  
-                  {/* Progress bar using percent if available, otherwise calculate from current/total */}
-                  {(progressData.percent !== undefined || (progressData.current !== undefined && progressData.total !== undefined && progressData.total > 0)) && (
-                    <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                      <div
-                        className="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${progressData.percent !== undefined 
-                            ? Math.min(100, progressData.percent) 
-                            : Math.min(100, (progressData.current! / progressData.total!) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Error display */}
       {error && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Upload Failed</AlertTitle>
+          <AlertTitle>Error</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
-      {/* Success stats */}
-      {uploadSuccess && uploadResult && (
-        <Card className="border-green-200 dark:border-green-800">
-          <CardContent className="pt-6">
-            <div className="space-y-4">
-              <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-5 w-5 text-green-500" />
-                <p className="font-semibold text-green-700 dark:text-green-400">
-                  Upload Successful!
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">{uploadResult.stats.messages_created}</p>
-                    <p className="text-xs text-muted-foreground">Messages</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Layers className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">{uploadResult.stats.chunks_created}</p>
-                    <p className="text-xs text-muted-foreground">Chunks</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">{uploadResult.stats.embeddings_created}</p>
-                    <p className="text-xs text-muted-foreground">Embeddings</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Tag className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">{uploadResult.stats.summaries_created}</p>
-                    <p className="text-xs text-muted-foreground">Summaries</p>
-                  </div>
-                </div>
-              </div>
-
-              {uploadResult.warnings && uploadResult.warnings.length > 0 && (
-                <Alert>
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertTitle>Warnings</AlertTitle>
-                  <AlertDescription>
-                    <ul className="list-disc list-inside space-y-1 mt-2">
-                      {uploadResult.warnings.map((warning, idx) => (
-                        <li key={idx} className="text-sm">{warning}</li>
-                      ))}
-                    </ul>
-                  </AlertDescription>
-                </Alert>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+      {/* Contact Form Dialog */}
+      {showContactForm && contactData && conversationId && (
+        <ContactFormDialog
+          open={showContactForm}
+          onClose={() => {
+            setShowContactForm(false);
+            setContactData(null);
+          }}
+          onSave={handleContactSave}
+          initialData={contactData}
+          conversationId={conversationId}
+          userId={userId}
+        />
       )}
+
 
       <Button
         onClick={handleUpload}
-        disabled={!file || isUploading || uploadSuccess}
+        disabled={!file || isDetecting || !!activeJobId}
         className="w-full"
       >
-        {isUploading ? (
+        {isDetecting ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Processing...
+            Detecting contact...
           </>
-        ) : uploadSuccess ? (
+        ) : activeJobId ? (
           <>
             <CheckCircle2 className="mr-2 h-4 w-4" />
-            Imported
+            Import in progress
           </>
         ) : (
           <>
             <Upload className="mr-2 h-4 w-4" />
-            Upload & Import
+            Start Import
           </>
         )}
       </Button>
-
-      {uploadSuccess && (
-        <Button
-          onClick={() => {
-            setUploadSuccess(false);
-            setUploadResult(null);
-            setError(null);
-            setUploadStep("idle");
-            setFile(null);
-          }}
-          variant="outline"
-          className="w-full"
-        >
-          Upload Another File
-        </Button>
-      )}
     </div>
   );
 }

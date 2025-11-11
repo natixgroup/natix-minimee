@@ -2,22 +2,13 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  // Optimisations pour réduire la charge CPU en dev
-  experimental: {
-    turbo: {
-      rules: {
-        '*.svg': {
-          loaders: ['@svgr/webpack'],
-          as: '*.js',
-        },
-      },
-    },
-  },
   // Réduire les recompilations
   onDemandEntries: {
     maxInactiveAge: 5 * 60 * 1000, // 5 minutes (augmenté pour réduire les recompilations)
     pagesBufferLength: 2, // Réduire encore le buffer
   },
+  // Configuration Turbopack pour Next.js 16
+  turbopack: {},
   // Désactiver certaines optimisations en dev pour réduire la charge
   webpack: (config, { dev }) => {
     if (dev) {

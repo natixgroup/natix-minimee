@@ -236,27 +236,51 @@ export async function sendMessageToBackendForDisplay(messageData) {
 }
 
 /**
+ * Parse agent prefix from message (format: [Agent Name] message)
+ * Returns { agentName: string | null, message: string }
+ */
+export function parseAgentPrefix(message) {
+  const prefixMatch = message.match(/^\[([^\]]+)\]\s*(.*)$/);
+  if (prefixMatch) {
+    return {
+      agentName: prefixMatch[1].trim(),
+      message: prefixMatch[2].trim(),
+    };
+  }
+  return {
+    agentName: null,
+    message: message,
+  };
+}
+
+/**
  * Send direct chat message to backend (for Minimee TEAM group conversations)
  * This is a direct chat with Minimee, not a message that needs approval
+ * Now supports agent routing via [Agent Name] prefix
  */
 export async function sendDirectChatToBackend(chatData) {
   const endpoint = `${BACKEND_API_URL}/minimee/chat/direct`;
   
   try {
+    // Parse agent prefix if present
+    const { agentName, message } = parseAgentPrefix(chatData.content);
+    
     logWebhook('send', '/minimee/chat/direct', {
       sender: chatData.sender,
       conversationId: chatData.conversation_id,
+      agentName: agentName || 'leader',
     });
 
     const response = await axios.post(
       endpoint,
       {
-        content: chatData.content,
+        content: message || chatData.content, // Use parsed message (without prefix)
         sender: chatData.sender,
         timestamp: chatData.timestamp,
         source: chatData.source || 'whatsapp',
         conversation_id: chatData.conversation_id,
         user_id: chatData.user_id,
+        agent_name: agentName, // Pass agent name for routing
       },
       {
         timeout: 30000, // 30 seconds
@@ -269,6 +293,7 @@ export async function sendDirectChatToBackend(chatData) {
     logWebhook('receive', '/minimee/chat/direct', {
       status: 'success',
       hasResponse: !!response.data.response,
+      requiresApproval: response.data.requires_approval || false,
     });
 
     return response.data;

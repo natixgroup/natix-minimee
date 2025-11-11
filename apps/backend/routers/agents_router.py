@@ -8,7 +8,8 @@ from db.database import get_db
 from models import Agent
 from schemas import AgentCreate, AgentUpdate, AgentResponse
 from services.agent_manager import (
-    get_agents, get_agent, create_agent, update_agent, delete_agent
+    get_agents, get_agent, create_agent, update_agent, delete_agent,
+    get_minimee_leader, set_minimee_leader
 )
 
 router = APIRouter()
@@ -32,6 +33,18 @@ async def create_agent_endpoint(
 ):
     """Create new agent"""
     return create_agent(db, agent_data)
+
+
+@router.get("/agents/leader", response_model=AgentResponse)
+async def get_leader_agent(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get the Minimee leader agent for a user"""
+    leader = get_minimee_leader(db, user_id)
+    if not leader:
+        raise HTTPException(status_code=404, detail="No leader agent found")
+    return leader
 
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
@@ -69,4 +82,18 @@ async def delete_agent_endpoint(
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
     return {"message": "Agent deleted"}
+
+
+@router.post("/agents/{agent_id}/set-leader", response_model=AgentResponse)
+async def set_leader_agent(
+    agent_id: int,
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Set an agent as the Minimee leader"""
+    try:
+        agent = set_minimee_leader(db, agent_id, user_id)
+        return agent
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 

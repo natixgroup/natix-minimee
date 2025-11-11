@@ -18,6 +18,12 @@ engine = create_engine(
     pool_pre_ping=True,  # Verify connections before using
     pool_size=5,
     max_overflow=10,
+    pool_recycle=3600,  # Recycle connections after 1 hour to prevent stale connections
+    pool_timeout=30,  # Timeout for getting connection from pool
+    connect_args={
+        "connect_timeout": 10,  # PostgreSQL connection timeout
+        "options": "-c statement_timeout=30000"  # 30s statement timeout
+    },
     echo=False  # Set to True for SQL logging
 )
 

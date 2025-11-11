@@ -7,7 +7,7 @@ import os
 import time
 import asyncio
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from config import settings
 from services.logs_service import log_to_db
 from services.metrics import record_llm_call
@@ -58,15 +58,39 @@ async def generate_llm_response(
     db: Optional[Session] = None,
     request_id: Optional[str] = None,
     message_id: Optional[int] = None,
-    user_id: Optional[int] = None
+    user_id: Optional[int] = None,
+    llm_log_callback: Optional[Callable[[Dict[str, Any]], None]] = None
 ) -> str:
     """
     Generate response using configured LLM provider
     Tracks metrics: latency, provider, success/failure
     Reads provider and model from DB settings if available
+    
+    Args:
+        llm_log_callback: Optional callback for real-time LLM logging (receives dict with request/response)
     """
+    import time
+    from datetime import datetime
+    
     # Get provider from DB settings if available
     provider, default_model_from_db = get_llm_provider_from_db(db)
+    
+    # Log LLM request via callback if provided
+    if llm_log_callback:
+        request_data = {
+            "type": "llm_call",
+            "request": prompt[:500] if len(prompt) > 500 else prompt,  # Truncate for display
+            "timestamp": datetime.utcnow().isoformat(),
+            "provider": provider,
+            "model": model or default_model_from_db,
+            "user_id": user_id
+        }
+        try:
+            llm_log_callback(request_data)
+        except Exception as e:
+            # Don't fail if callback fails
+            if db:
+                log_to_db(db, "WARNING", f"LLM log callback failed: {str(e)}", service="llm_router")
     
     # Déterminer le modèle utilisé (paramètre > DB > config > default)
     if provider == "ollama":
@@ -115,12 +139,48 @@ async def generate_llm_response(
                     "provider": provider,
                     "model": actual_model
                 })
+                
+                # Log LLM response via callback if provided
+                if llm_log_callback:
+                    response_data = {
+                        "type": "llm_call",
+                        "request": prompt[:500] if len(prompt) > 500 else prompt,
+                        "response": result[:500] if len(result) > 500 else result,  # Truncate for display
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "provider": provider,
+                        "model": actual_model,
+                        "user_id": user_id
+                    }
+                    try:
+                        llm_log_callback(response_data)
+                    except Exception as e:
+                        # Don't fail if callback fails
+                        if db:
+                            log_to_db(db, "WARNING", f"LLM log callback failed: {str(e)}", service="llm_router")
+                
                 return result
             except Exception as e:
                 error_msg = f"LLM generation error ({provider}): {str(e)}"
                 if db:
                     record_llm_call(db, provider, 0, None, success=False)
                     log_to_db(db, "ERROR", error_msg, service="llm_router")
+                
+                # Log LLM error via callback if provided
+                if llm_log_callback:
+                    error_data = {
+                        "type": "llm_error",
+                        "request": prompt[:500] if len(prompt) > 500 else prompt,
+                        "error": str(e),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "provider": provider,
+                        "model": actual_model,
+                        "user_id": user_id
+                    }
+                    try:
+                        llm_log_callback(error_data)
+                    except Exception:
+                        pass  # Ignore callback errors
+                
                 raise RuntimeError(error_msg)
     else:
         # Sans DB, pas de logging mais on continue
@@ -216,6 +276,7 @@ async def _generate_openai(
 ) -> str:
     """Generate using OpenAI"""
     from openai import AsyncOpenAI
+    import os
     
     # Use get_openai_api_key() to get key from DB or env
     api_key = settings.get_openai_api_key()
@@ -224,7 +285,18 @@ async def _generate_openai(
     
     # Default to gpt-4o (Standard level) if no model specified
     model = model or "gpt-4o"
-    client = AsyncOpenAI(api_key=api_key)
+    
+    # Create client with custom http_client to avoid proxies parameter issues
+    # OpenAI SDK 2.x may try to pass 'proxies' to httpx.AsyncClient which doesn't support it
+    import httpx
+    http_client = httpx.AsyncClient(
+        timeout=60.0,
+        # Explicitly don't configure proxy to avoid version conflicts
+    )
+    client = AsyncOpenAI(
+        api_key=api_key,
+        http_client=http_client
+    )
     
     response = await client.chat.completions.create(
         model=model,
@@ -424,13 +496,24 @@ async def _generate_openai_stream(
 ):
     """Generate using OpenAI with streaming"""
     from openai import AsyncOpenAI
+    import os
     
     api_key = settings.get_openai_api_key()
     if not api_key:
         raise ValueError("OpenAI API key not configured. Please configure it in Settings > Integrations > API Keys & Credentials")
     
     model = model or "gpt-4o"
-    client = AsyncOpenAI(api_key=api_key)
+    
+    # Create client with custom http_client to avoid proxies parameter issues
+    import httpx
+    http_client = httpx.AsyncClient(
+        timeout=60.0,
+        # Explicitly don't configure proxy to avoid version conflicts
+    )
+    client = AsyncOpenAI(
+        api_key=api_key,
+        http_client=http_client
+    )
     
     full_response = ""
     

@@ -8,15 +8,21 @@ from db.database import Base, get_db
 from main import app
 
 
-# Test database URL (use in-memory SQLite for fast tests, or separate test DB)
-TEST_DATABASE_URL = "sqlite:///./test.db"
+# Test database URL (use PostgreSQL for compatibility with JSONB and pgvector)
+# Use the same database as development, but with a test schema or separate test DB
+import os
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgresql://minimee:minimee@postgres:5432/minimee_test")
 
 
 @pytest.fixture(scope="function")
 def db():
     """Create a test database session"""
-    # Create test engine
-    engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+    from models import User
+    
+    # Create test engine (PostgreSQL)
+    engine = create_engine(TEST_DATABASE_URL)
+    
+    # Create all tables
     Base.metadata.create_all(bind=engine)
     
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -24,10 +30,26 @@ def db():
     # Create session
     session = TestingSessionLocal()
     
+    # Create a test user if it doesn't exist
+    test_user = session.query(User).filter(User.id == 1).first()
+    if not test_user:
+        test_user = User(
+            id=1,
+            email="test@example.com",
+            name="Test User"
+        )
+        session.add(test_user)
+        session.commit()
+    
     try:
         yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
+        # Clean up: drop all tables after test
         Base.metadata.drop_all(bind=engine)
 
 

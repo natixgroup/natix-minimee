@@ -27,6 +27,8 @@ class User(Base):
     settings = relationship("Setting", back_populates="user")
     policies = relationship("Policy", back_populates="user")
     whatsapp_integrations = relationship("WhatsAppIntegration", back_populates="user")
+    contacts = relationship("Contact", back_populates="user")
+    ingestion_jobs = relationship("IngestionJob", back_populates="user")
 
 
 class Message(Base):
@@ -82,12 +84,17 @@ class Agent(Base):
     style = Column(Text, nullable=True)
     enabled = Column(Boolean, default=True, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    is_minimee_leader = Column(Boolean, default=False, nullable=False, index=True)
+    whatsapp_integration_id = Column(Integer, ForeignKey("whatsapp_integrations.id"), nullable=True, index=True)
+    whatsapp_display_name = Column(String, nullable=True)
+    approval_rules = Column(JSONB, nullable=True)  # Rules for automatic approval decisions
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     # Relationships
     user = relationship("User", back_populates="agents")
     prompts = relationship("Prompt", back_populates="agent")
+    whatsapp_integration = relationship("WhatsAppIntegration", foreign_keys=[whatsapp_integration_id])
 
 
 class Prompt(Base):
@@ -246,4 +253,74 @@ class WhatsAppIntegration(Base):
     __table_args__ = (
         sa.UniqueConstraint('user_id', 'integration_type', name='uq_user_integration_type'),
     )
+
+
+class RelationType(Base):
+    __tablename__ = "relation_types"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, unique=True, nullable=False, index=True)  # Unique code like 'epoux', 'client'
+    label_masculin = Column(String, nullable=False)
+    label_feminin = Column(String, nullable=False)
+    label_autre = Column(String, nullable=True)  # For "autre" gender
+    category = Column(String, nullable=False, index=True)  # 'personnel' or 'professionnel'
+    display_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    meta_data = Column("metadata", JSONB, nullable=True)  # For icons, colors, descriptions (renamed to avoid SQLAlchemy reserved word)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    contacts = relationship("Contact", secondary="contact_relation_types", back_populates="relation_types")
+
+
+class ContactRelationType(Base):
+    __tablename__ = "contact_relation_types"
+
+    contact_id = Column(Integer, ForeignKey("contacts.id", ondelete="CASCADE"), primary_key=True, index=True)
+    relation_type_id = Column(Integer, ForeignKey("relation_types.id", ondelete="CASCADE"), primary_key=True, index=True)
+
+
+class Contact(Base):
+    __tablename__ = "contacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = Column(String, nullable=False, index=True)
+    first_name = Column(String, nullable=True)
+    nickname = Column(String, nullable=True)
+    gender = Column(String, nullable=True)  # masculin, féminin, autre
+    # relation_type removed - now using many-to-many relation_types
+    context = Column(Text, nullable=True)
+    languages = Column(JSONB, nullable=True)  # Array of languages
+    location = Column(String, nullable=True)
+    importance_rating = Column(Integer, nullable=True)  # 1-5
+    dominant_themes = Column(JSONB, nullable=True)  # Array of themes
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="contacts")
+    relation_types = relationship("RelationType", secondary="contact_relation_types", back_populates="contacts")
+    
+    # Unique constraint: one contact per conversation per user
+    __table_args__ = (
+        sa.UniqueConstraint('user_id', 'conversation_id', name='uq_user_conversation_contact'),
+    )
+
+
+class IngestionJob(Base):
+    __tablename__ = "ingestion_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    conversation_id = Column(String, nullable=True, index=True)
+    status = Column(String, nullable=False, default='pending', index=True)  # pending/running/completed/failed
+    progress = Column(JSONB, nullable=True)  # Progress data
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="ingestion_jobs")
 

@@ -64,23 +64,108 @@ def generate_embedding(text: str, db: Optional[Session] = None, request_id: Opti
     return embedding.tolist()
 
 
+def _calculate_temporal_metadata(timestamp: datetime) -> Dict:
+    """
+    Calculate temporal metadata from timestamp
+    Returns: period_label, time_range, year, month, season
+    """
+    year = timestamp.year
+    month = timestamp.month
+    
+    # Determine season
+    if month in [12, 1, 2]:
+        season = "hiver"
+        season_en = "winter"
+    elif month in [3, 4, 5]:
+        season = "printemps"
+        season_en = "spring"
+    elif month in [6, 7, 8]:
+        season = "été"
+        season_en = "summer"
+    else:  # 9, 10, 11
+        season = "automne"
+        season_en = "autumn"
+    
+    # Period label (e.g., "printemps 2023")
+    period_label = f"{season} {year}"
+    
+    # Time range for the season
+    if month in [12, 1, 2]:
+        start_month = 12
+        end_month = 2
+        start_year = year if month != 12 else year - 1
+        end_year = year if month != 12 else year
+    elif month in [3, 4, 5]:
+        start_month = 3
+        end_month = 5
+        start_year = year
+        end_year = year
+    elif month in [6, 7, 8]:
+        start_month = 6
+        end_month = 8
+        start_year = year
+        end_year = year
+    else:  # 9, 10, 11
+        start_month = 9
+        end_month = 11
+        start_year = year
+        end_year = year
+    
+    # Format time range (e.g., "2023-03-01 → 2023-05-31")
+    from datetime import date
+    start_date = date(start_year, start_month, 1)
+    # Get last day of end month
+    if end_month == 12:
+        end_date = date(end_year, end_month, 31)
+    else:
+        from calendar import monthrange
+        last_day = monthrange(end_year, end_month)[1]
+        end_date = date(end_year, end_month, last_day)
+    
+    time_range = f"{start_date.isoformat()} → {end_date.isoformat()}"
+    
+    return {
+        'period_label': period_label,
+        'time_range': time_range,
+        'year': year,
+        'month': month,
+        'season': season
+    }
+
+
 def build_embedding_metadata(
     message: Message,
     language: Optional[str] = None,
     chunk: bool = False,
+    start_timestamp: Optional[datetime] = None,
+    end_timestamp: Optional[datetime] = None,
     **extra_metadata
 ) -> Dict:
     """
     Build standard metadata dict for embedding from a Message object
     Includes: sender, recipient, recipients, source, conversation_id, language, timestamp, chunk
+    Also includes temporal metadata: period_label, time_range, year, month, season
     """
+    msg_timestamp = message.timestamp if message.timestamp else datetime.utcnow()
+    
     metadata = {
         'sender': message.sender,
         'source': message.source,
         'conversation_id': message.conversation_id,
         'chunk': 'true' if chunk else 'false',
-        'timestamp': message.timestamp.isoformat() if message.timestamp else datetime.utcnow().isoformat(),
+        'timestamp': msg_timestamp.isoformat(),
     }
+    
+    # Add temporal metadata
+    temporal_meta = _calculate_temporal_metadata(msg_timestamp)
+    metadata.update(temporal_meta)
+    
+    # If block has start/end timestamps, use them for time_range
+    if start_timestamp and end_timestamp:
+        metadata['time_range'] = f"{start_timestamp.date().isoformat()} → {end_timestamp.date().isoformat()}"
+        # Recalculate period_label based on start timestamp
+        start_temporal = _calculate_temporal_metadata(start_timestamp)
+        metadata['period_label'] = start_temporal['period_label']
     
     # Add recipient info (for 1-1 conversations)
     if message.recipient:

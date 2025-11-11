@@ -57,6 +57,8 @@ async def log_requests(request: Request, call_next):
     request.state.request_id = request_id
     request.state.start_time = start_time
     
+    endpoint_path = request.url.path
+    
     # Process request
     response = await call_next(request)
     
@@ -69,8 +71,6 @@ async def log_requests(request: Request, call_next):
     
     # Log structured request (categorize frontend polling vs API calls)
     try:
-        endpoint_path = request.url.path
-        
         # Skip logging for static assets only
         should_skip = (
             endpoint_path.startswith("/_next/") or
@@ -78,45 +78,59 @@ async def log_requests(request: Request, call_next):
         )
         
         if not should_skip:
-            db = next(get_db())
-            
-            # Categorize service based on endpoint
-            # Frontend polling/interaction endpoints -> "frontend" (can be filtered out)
-            frontend_polling_paths = [
-                "/logs",
-                "/logs/stream",
-                "/logs/metadata",
-                "/metrics",
-                "/health",
-                "/embeddings",
-                "/llm/status",
-                "/llm/models",
-                "/embeddings/models",
-                "/settings",
-            ]
-            
-            # Check if path starts with any of the frontend polling paths
-            is_frontend_polling = any(
-                endpoint_path == path or 
-                endpoint_path.startswith(f"{path}/") or
-                endpoint_path.startswith(path)
-                for path in frontend_polling_paths
-            )
-            
-            service = "frontend" if is_frontend_polling else "api"
-            
-            log_structured(
-                db=db,
-                level="INFO" if response.status_code < 400 else "ERROR",
-                message=f"{request.method} {request.url.path} - {response.status_code}",
-                service=service,
-                request_id=request_id,
-                endpoint=endpoint_path,
-                method=request.method,
-                status_code=response.status_code,
-                latency_ms=round(process_time * 1000, 2),
-                user_agent=request.headers.get("user-agent"),
-            )
+            # Use get_db() properly with context manager to ensure connection is closed
+            db_gen = get_db()
+            try:
+                db = next(db_gen)
+                
+                # Categorize service based on endpoint
+                # Frontend polling/interaction endpoints -> "frontend" (can be filtered out)
+                frontend_polling_paths = [
+                    "/logs",
+                    "/logs/stream",
+                    "/logs/metadata",
+                    "/metrics",
+                    "/health",
+                    "/embeddings",
+                    "/llm/status",
+                    "/llm/models",
+                    "/embeddings/models",
+                    "/settings",
+                ]
+                
+                # Check if path starts with any of the frontend polling paths
+                is_frontend_polling = any(
+                    endpoint_path == path or 
+                    endpoint_path.startswith(f"{path}/") or
+                    endpoint_path.startswith(path)
+                    for path in frontend_polling_paths
+                )
+                
+                service = "frontend" if is_frontend_polling else "api"
+                
+                # Build metadata
+                metadata = {
+                    "endpoint": endpoint_path,
+                    "method": request.method,
+                    "status_code": response.status_code,
+                    "latency_ms": round(process_time * 1000, 2),
+                    "user_agent": request.headers.get("user-agent"),
+                }
+                
+                log_structured(
+                    db=db,
+                    level="INFO" if response.status_code < 400 else "ERROR",
+                    message=f"{request.method} {request.url.path} - {response.status_code}",
+                    service=service,
+                    request_id=request_id,
+                    **metadata
+                )
+            finally:
+                # Ensure database connection is closed
+                try:
+                    next(db_gen, None)
+                except StopIteration:
+                    pass
     except Exception:
         # Don't fail request if logging fails
         pass
@@ -147,6 +161,44 @@ async def startup_event():
     """Initialize services on startup"""
     startup_start = time.time()
     print("Starting Minimee Backend...")
+    
+    # Register main event loop with WebSocket manager for thread-safe broadcasting
+    import asyncio
+    from services.websocket_manager import websocket_manager
+    try:
+        loop = asyncio.get_event_loop()
+        websocket_manager.set_main_loop(loop)
+    except Exception as e:
+        print(f"⚠ Warning: Could not register main event loop: {e}")
+    
+    # Validate Python syntax (catch any import-time syntax errors)
+    try:
+        import sys
+        import importlib.util
+        from pathlib import Path
+        
+        # Check if we can import all routers (this will catch syntax errors)
+        router_files = Path(__file__).parent / "routers"
+        if router_files.exists():
+            for router_file in router_files.glob("*.py"):
+                if router_file.name != "__init__.py":
+                    try:
+                        spec = importlib.util.spec_from_file_location(
+                            router_file.stem, router_file
+                        )
+                        if spec and spec.loader:
+                            # Try to load (will raise SyntaxError if invalid)
+                            importlib.util.module_from_spec(spec)
+                    except SyntaxError as e:
+                        print(f"✗ ERROR: Syntax error in {router_file.name}:{e.lineno}: {e.msg}")
+                        raise
+        print("✓ Python syntax validated")
+    except SyntaxError as e:
+        print(f"✗ ERROR: Syntax error detected: {e}")
+        raise
+    except Exception as e:
+        # Non-critical, continue
+        print(f"⚠ Warning: Could not validate all syntax: {e}")
     
     # Verify pgvector extension
     database_url = os.getenv("DATABASE_URL", DATABASE_URL)

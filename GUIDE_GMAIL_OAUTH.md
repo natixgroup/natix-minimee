@@ -226,6 +226,9 @@ Vous devriez voir `{"status":"ok"}`
 
 1. Vous devriez voir le bouton **"Connect Gmail"**
 2. Cliquez dessus
+3. **⚠️ IMPORTANT** : Si vous avez déjà connecté Gmail mais que le refresh_token est manquant, vous devez forcer la ré-autorisation :
+   - Utilisez l'URL : `http://localhost:8001/auth/gmail/start?force_consent=true&user_id=1`
+   - Ou supprimez le token existant et reconnectez-vous
 
 ### 7.3 Autoriser l'accès
 
@@ -295,6 +298,34 @@ Vous devriez voir `{"status":"ok"}`
    - **Clé secrète** → `GMAIL_CLIENT_SECRET`
 2. Vérifiez qu'il n'y a pas d'espaces avant/après les valeurs dans `.env`
 3. Vérifiez les guillemets : utilisez des guillemets droits `"` et non des guillemets typographiques `"` ou `'`
+
+### Erreur : "The credentials do not contain the necessary fields need to refresh the access token"
+
+**Cause** : Le `refresh_token` est manquant dans la base de données. Google ne renvoie pas toujours un refresh_token lors de l'autorisation OAuth, surtout si l'utilisateur a déjà autorisé l'application précédemment.
+
+**Solutions** :
+
+1. **Ré-authentifier avec force_consent** :
+   - Accédez à : `http://localhost:8001/auth/gmail/start?force_consent=true&user_id=1`
+   - Ou utilisez l'API directement :
+     ```bash
+     curl "http://localhost:8001/auth/gmail/start?force_consent=true&user_id=1"
+     ```
+   - Cela forcera Google à demander à nouveau le consentement et à fournir un refresh_token
+
+2. **Vérifier le refresh_token en base** :
+   ```bash
+   docker exec minimee-postgres psql -U minimee -d minimee -c "SELECT id, provider, user_id, CASE WHEN refresh_token IS NULL THEN 'NULL' WHEN refresh_token = '' THEN 'EMPTY' ELSE 'HAS_TOKEN' END as refresh_token_status FROM oauth_tokens WHERE provider = 'gmail';"
+   ```
+
+3. **Si le refresh_token est toujours NULL après ré-authentification** :
+   - Vérifiez que vous utilisez `access_type='offline'` (déjà configuré dans le code)
+   - Vérifiez que vous avez bien cliqué sur "Autoriser" et non "Annuler"
+   - Essayez de révoquer l'accès dans [Google Account Settings](https://myaccount.google.com/permissions) puis ré-authentifiez
+
+4. **Message d'erreur amélioré** :
+   - Le backend affiche maintenant un message clair indiquant quel champ manque
+   - Si le refresh_token est manquant, vous verrez : "Gmail refresh_token is missing. Please re-authenticate Gmail to obtain a refresh token."
 
 ### Le backend ne charge pas les variables d'environnement
 

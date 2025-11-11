@@ -2,7 +2,7 @@
 Centralized configuration for Minimee backend
 """
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, Dict
 from db.database import SessionLocal
 
 
@@ -28,6 +28,29 @@ class Settings(BaseSettings):
     rag_rerank_enabled: bool = True  # Enable/disable reranking
     rag_rerank_top_k: int = 20  # Number of results to rerank (before keeping top limit)
     rag_rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # Cross-encoder model for reranking
+    
+    # RAG Context Management Configuration
+    # Context window mapping: provider -> model -> context_window_size (in tokens)
+    rag_context_window_map: Dict[str, Dict[str, int]] = {
+        "openai": {
+            "gpt-4o-mini": 128000,
+            "gpt-4o": 128000,
+            "gpt-4": 8192,
+            "gpt-3.5-turbo": 16384,
+        },
+        "ollama": {
+            "llama3.2:1b": 8192,
+            "llama3.2:3b": 8192,
+            "llama3.1:8b": 131072,
+            "mistral": 32768,
+        },
+        "vllm": {
+            "mistral-7b-instruct-v0.1": 32768,
+        }
+    }
+    rag_compression_enabled: bool = True  # Enable/disable context compression
+    rag_token_buffer: int = 500  # Safety buffer for system prompt and response generation
+    rag_recent_messages_keep: int = 5  # Number of recent messages to keep complete (not compressed)
     
     # Gmail OAuth
     gmail_client_id: Optional[str] = None

@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from services.llm_router import generate_multiple_options
-from services.rag_llamaindex import retrieve_context, build_prompt_with_context
+from services.minimee_agent.retriever import create_advanced_retriever
+from services.minimee_agent.llm_wrapper import create_minimee_llm
 from services.agent_manager import select_agent_for_context
 from services.action_logger import log_action_context, log_action
 from services.logs_service import log_to_db
@@ -29,19 +30,21 @@ async def generate_response_options(
     """
     Generate multiple response options for user approval
     """
-    # Retrieve context using RAG (limit to current conversation for better context)
+    # Retrieve context using LangChain RAG (limit to current conversation for better context)
     try:
-        context = retrieve_context(
-            db, 
-            message.content, 
-            message.user_id,
-            limit=5,
-            conversation_id=message.conversation_id,  # Prioritize current conversation
-            sender=message.sender,  # Filter by sender for better relevance
-            request_id=request_id
+        llm = create_minimee_llm(db=db, user_id=message.user_id)
+        retriever = create_advanced_retriever(
+            llm=llm,
+            db=db,
+            user_id=message.user_id,
+            conversation_id=message.conversation_id,
+            source=message.source,
+            initial_limit=10,
+            final_limit=5
         )
+        docs = retriever.get_relevant_documents(message.content)
+        context = "\n".join([doc.page_content for doc in docs])
     except Exception as e:
-        # log_to_db is already imported at the top of the file
         log_to_db(db, "WARNING", f"RAG context error: {str(e)}, using empty context", service="approval_flow")
         context = ""
     
@@ -66,6 +69,19 @@ async def generate_response_options(
         source=message.source,
         metadata={"num_options": num_options}
     ) as log:
+        # Get LLM provider info for token management
+        from services.llm_router import get_llm_provider_from_db
+        llm_provider, llm_model_from_db = get_llm_provider_from_db(db)
+        llm_model = llm_model_from_db
+        if not llm_model:
+            from config import settings
+            if llm_provider == "ollama":
+                llm_model = settings.ollama_model or "llama3.2:1b"
+            elif llm_provider == "vllm":
+                llm_model = "mistral-7b-instruct-v0.1"
+            elif llm_provider == "openai":
+                llm_model = "gpt-4o"
+        
         # Build prompt
         if agent:
             system_prompt = f"You are {agent.name}, {agent.role}. {agent.prompt}"
@@ -75,16 +91,41 @@ async def generate_response_options(
             system_prompt = "You are Minimee, a personal AI assistant."
         
     # Build prompt optimized for speed (short responses for WhatsApp)
-    if context:
-        full_prompt = f"{system_prompt}\n\nContext: {context}\n\nUser: {message.content}\n\nShort reply (30 words max):"
-    else:
-        full_prompt = f"{system_prompt}\n\nUser: {message.content}\n\nShort reply (30 words max):"
-        
-        log.set_output({
-            "system_prompt": system_prompt[:500],
-            "full_prompt_length": len(full_prompt),
-            "context_length": len(context) if context else 0
-        })
+    # Using LangChain-style prompt building
+    base_prompt = f"""Context from conversation history:
+{context}
+
+User message:
+{message.content}
+
+Generate {num_options} different response options. Each option should be:
+1. Contextually appropriate based on the conversation history
+2. Short and concise (30 words max for WhatsApp)
+3. Match the communication style
+4. Address the user's message directly"""
+    
+    # Add WhatsApp-specific optimization (short replies)
+    full_prompt = f"{system_prompt}\n\n{base_prompt}\n\nShort reply (30 words max):"
+    
+    # Log token information (simplified - LangChain handles token management internally)
+    from services.rag_llamaindex import estimate_tokens  # Keep for token estimation
+    context_tokens = estimate_tokens(context) if context else 0
+    prompt_tokens = estimate_tokens(full_prompt)
+    
+    log_to_db(db, "DEBUG",
+        f"Prompt tokens - context: {context_tokens}, total: {prompt_tokens}",
+        service="approval_flow",
+        request_id=request_id
+    )
+    
+    log.set_output({
+        "system_prompt": system_prompt[:500],
+        "full_prompt_length": len(full_prompt),
+        "context_length": len(context) if context else 0,
+        "tokens_before": context_tokens,
+        "tokens_after": prompt_tokens,
+        "compression_applied": False  # LangChain handles this internally
+    })
     
     # Generate multiple options (sera loggé dans llm_router.py)
     options = await generate_multiple_options(full_prompt, num_options, db, request_id=request_id, message_id=message.id, user_id=message.user_id)

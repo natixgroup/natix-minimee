@@ -68,6 +68,92 @@ def _get_reranker() -> Optional[Any]:
     return _reranker if settings.rag_rerank_enabled else None
 
 
+def estimate_tokens(text: str) -> int:
+    """
+    Estimate number of tokens in text
+    Approximation: 1 token ≈ 4 characters for French/English
+    This is a rough estimate, actual tokenization varies by model
+    """
+    if not text:
+        return 0
+    # Conservative estimate: 1 token per 4 characters
+    # This works well for French and English text
+    return len(text) // 4
+
+
+def get_model_context_window(provider: str, model: str) -> int:
+    """
+    Get the context window size for a specific model
+    Looks up in rag_context_window_map, with intelligent fallbacks
+    """
+    provider_lower = provider.lower()
+    model_lower = model.lower()
+    
+    # Try exact match first
+    if provider_lower in settings.rag_context_window_map:
+        if model_lower in settings.rag_context_window_map[provider_lower]:
+            return settings.rag_context_window_map[provider_lower][model_lower]
+        
+        # Try partial match (e.g., "llama3.2:1b" matches "llama3.2:1b")
+        for model_key, context_window in settings.rag_context_window_map[provider_lower].items():
+            if model_lower in model_key.lower() or model_key.lower() in model_lower:
+                return context_window
+    
+    # Fallback: provider-specific defaults
+    if provider_lower == "openai":
+        return 128000  # Most OpenAI models have large context windows
+    elif provider_lower == "ollama":
+        return 8192  # Most Ollama models have smaller context windows
+    elif provider_lower == "vllm":
+        return 32768  # vLLM models typically have medium context windows
+    
+    # Ultimate fallback
+    return 4096
+
+
+def calculate_available_context_tokens(
+    provider: str,
+    model: str,
+    user_message: str,
+    system_prompt_size: int = 200
+) -> int:
+    """
+    Calculate available tokens for context after accounting for:
+    - System prompt
+    - User message
+    - Safety buffer
+    """
+    context_window = get_model_context_window(provider, model)
+    user_message_tokens = estimate_tokens(user_message)
+    buffer = settings.rag_token_buffer
+    
+    available = context_window - system_prompt_size - user_message_tokens - buffer
+    
+    # Ensure we don't return negative
+    return max(0, available)
+
+
+def _get_recent_conversation_messages(
+    db: Session,
+    conversation_id: str,
+    user_id: int,
+    limit: int = 10
+) -> List[Message]:
+    """
+    Get recent messages from the same conversation, ordered by timestamp (most recent first)
+    This ensures we include recent context even if semantic similarity is low
+    """
+    try:
+        messages = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.user_id == user_id
+        ).order_by(Message.timestamp.desc()).limit(limit).all()
+        return messages
+    except Exception as e:
+        log_to_db(db, "WARNING", f"Error fetching recent messages: {str(e)}", service="rag_llamaindex")
+        return []
+
+
 def retrieve_context(
     db: Session,
     query: str,
@@ -78,6 +164,7 @@ def retrieve_context(
     sender: Optional[str] = None,
     recipient: Optional[str] = None,
     conversation_id: Optional[str] = None,
+    recent_conversation_id: Optional[str] = None,
     request_id: Optional[str] = None,
     return_details: bool = False
 ) -> Union[str, Tuple[str, Dict]]:
@@ -86,6 +173,15 @@ def retrieve_context(
     Returns formatted context string for LLM prompt
     
     Uses LlamaIndex for reranking when enabled (improves relevance by re-evaluating with cross-encoder)
+    
+    Also includes recent messages from the same conversation to ensure context continuity,
+    even if they don't match semantically well with the query.
+    
+    Args:
+        conversation_id: Filter RAG search to this conversation (None = search all conversations)
+        recent_conversation_id: Include recent messages from this conversation (for context continuity)
+                                 If None, uses conversation_id. Useful when you want to search all conversations
+                                 but still include recent messages from a specific conversation.
     """
     try:
         # Initialize LlamaIndex settings if needed
@@ -103,7 +199,8 @@ def retrieve_context(
                 "language": language,
                 "use_chunks": use_chunks,
                 "rerank_enabled": settings.rag_rerank_enabled,
-                "conversation_id": conversation_id
+                "conversation_id": conversation_id,
+                "recent_conversation_id": recent_conversation_id
             },
             request_id=request_id,
             user_id=user_id,
@@ -112,7 +209,8 @@ def retrieve_context(
         ) as log:
             # Reduce threshold when filtering by conversation_id to prioritize recent conversation context
             # This ensures that recent messages in the same conversation are included even if semantic similarity is lower
-            threshold = 0.3 if conversation_id else 0.5  # Lower threshold for conversation-scoped queries
+            # Lower threshold (0.35) for global search to find more relevant results across all conversations
+            threshold = 0.3 if conversation_id else 0.35  # More permissive threshold for global search
             similar_results = find_similar_messages_enhanced(
                 db,
                 query,
@@ -140,71 +238,121 @@ def retrieve_context(
             else:
                 log.set_output({"results_count": 0})
         
-        if not similar_results:
+        # Combine RAG results with recent conversation messages
+        # This ensures we don't miss important recent context
+        all_messages_dict = {}  # key -> (message, similarity, summary, tags, from_rag)
+        rag_message_ids = set()  # Track message IDs from RAG to avoid duplicates
+        
+        # Add RAG results (including chunks)
+        if similar_results:
+            for idx, result in enumerate(similar_results):
+                message = result['message']
+                if message and message.user_id == user_id:
+                    # Use message.id as key if available, otherwise use index-based key for chunks
+                    if message.id:
+                        key = message.id
+                        rag_message_ids.add(message.id)
+                    else:
+                        # For chunks without message.id, use a unique key based on content and timestamp
+                        key = f"chunk_{idx}_{message.timestamp.isoformat() if message.timestamp else idx}"
+                    
+                    all_messages_dict[key] = (
+                        message,
+                        result['similarity'],
+                        result.get('summary'),
+                        result.get('tags'),
+                        True  # from_rag
+                    )
+        
+        # Add recent conversation messages (if recent_conversation_id or conversation_id provided)
+        # This ensures recent context is included even if not semantically similar
+        # Use recent_conversation_id if provided, otherwise fall back to conversation_id
+        recent_conv_id = recent_conversation_id or conversation_id
+        if recent_conv_id:
+            recent_messages = _get_recent_conversation_messages(db, recent_conv_id, user_id, limit=limit * 2)
+            for msg in recent_messages:
+                if msg.id and msg.id not in rag_message_ids:
+                    # Message not in RAG results, add it with similarity 0 (recent context)
+                    all_messages_dict[msg.id] = (msg, 0.0, None, None, False)  # from_recent
+        
+        if not all_messages_dict:
             if return_details:
                 return "No relevant conversation history found.", {"results_count": 0, "top_similarity": 0, "avg_similarity": 0, "results": []}
             return "No relevant conversation history found."
         
         # Record RAG hit
-        avg_similarity = sum(r['similarity'] for r in similar_results) / len(similar_results) if similar_results else 0
-        record_rag_hit(db, avg_similarity, len(similar_results))
+        rag_messages = [m for m in all_messages_dict.values() if m[4]]  # from_rag=True
+        if rag_messages:
+            avg_similarity = sum(r[1] for r in rag_messages) / len(rag_messages) if rag_messages else 0
+            record_rag_hit(db, avg_similarity, len(rag_messages))
         
+        # Build context lines, sorted by timestamp (chronological order)
         context_parts = ["Relevant conversation history:"]
-        for result in similar_results:
-            message = result['message']
-            similarity = result['similarity']
-            summary = result.get('summary')
-            tags = result.get('tags')
+        context_lines = []
+        
+        for message, similarity, summary, tags, from_rag in all_messages_dict.values():
+            # Build context line with sender/recipient info
+            context_line = (
+                f"[{message.timestamp.strftime('%Y-%m-%d %H:%M')}] "
+                f"{message.sender}"
+            )
             
-            # Only include messages from the same user
-            if message and message.user_id == user_id:
-                # Build context line with sender/recipient info
-                context_line = (
-                    f"[{message.timestamp.strftime('%Y-%m-%d %H:%M')}] "
-                    f"{message.sender}"
-                )
-                
-                # Add recipient info if available
-                if message.recipient:
-                    context_line += f" → {message.recipient}"
-                elif message.recipients:
-                    participants_str = ", ".join(message.recipients[:3])  # Limit for display
-                    if len(message.recipients) > 3:
-                        participants_str += f" (+{len(message.recipients) - 3} others)"
-                    context_line += f" → [Group: {participants_str}]"
-                
-                context_line += f": {message.content}"
-                
-                # Add summary if available (for chunks)
-                if summary:
-                    context_line += f" [Summary: {summary}]"
-                
-                # Add similarity score for debugging
+            # Add recipient info if available
+            if message.recipient:
+                context_line += f" → {message.recipient}"
+            elif message.recipients:
+                participants_str = ", ".join(message.recipients[:3])  # Limit for display
+                if len(message.recipients) > 3:
+                    participants_str += f" (+{len(message.recipients) - 3} others)"
+                context_line += f" → [Group: {participants_str}]"
+            
+            context_line += f": {message.content}"
+            
+            # Add summary if available (for chunks)
+            if summary:
+                context_line += f" [Summary: {summary}]"
+            
+            # Add similarity score for debugging (only for RAG results)
+            if from_rag:
                 context_line += f" (similarity: {similarity:.2f})"
-                
-                context_parts.append(context_line)
+            else:
+                context_line += " (recent context)"
+            
+            context_lines.append((message.timestamp, context_line))
+        
+        # Sort by timestamp (chronological order)
+        context_lines.sort(key=lambda x: x[0])
+        context_parts.extend([line for _, line in context_lines])
         
         context = "\n".join(context_parts)
         
         if return_details:
             # Return context + debug details
+            # Include both RAG and recent messages in details
+            all_results = []
+            for message, similarity, summary, tags, from_rag in all_messages_dict.values():
+                all_results.append({
+                    "content": message.content if message else "",
+                    "sender": message.sender if message else "",
+                    "timestamp": message.timestamp.isoformat() if message and message.timestamp else "",
+                    "source": message.source if message else "",
+                    "similarity": similarity if from_rag else None,  # None for recent context
+                    "summary": summary,
+                    "tags": tags,
+                    "from_rag": from_rag
+                })
+            
+            # Sort results by timestamp for details too
+            all_results.sort(key=lambda x: x.get("timestamp", ""))
+            
             details = {
-                "results_count": len(similar_results),
-                "top_similarity": similar_results[0]['similarity'] if similar_results else 0,
-                "avg_similarity": avg_similarity if similar_results else 0,
-                "reranked": settings.rag_rerank_enabled and (limit > 10 or len(similar_results) > limit),
-                "results": [
-                    {
-                        "content": r['message'].content if r.get('message') else "",
-                        "sender": r['message'].sender if r.get('message') else "",
-                        "timestamp": r['message'].timestamp.isoformat() if r.get('message') and r['message'].timestamp else "",
-                        "source": r['message'].source if r.get('message') else "",
-                        "similarity": r['similarity'],
-                        "summary": r.get('summary'),
-                        "tags": r.get('tags'),
-                    }
-                    for r in similar_results
-                ]
+                "results_count": len(all_messages_dict),
+                "rag_results_count": len(rag_messages),
+                "recent_results_count": len(all_messages_dict) - len(rag_messages),
+                "top_similarity": max((r[1] for r in rag_messages), default=0) if rag_messages else 0,
+                "avg_similarity": avg_similarity if rag_messages else 0,
+                "reranked": settings.rag_rerank_enabled and (limit > 10 or len(similar_results) > limit) if similar_results else False,
+                "results": all_results
             }
             return context, details
         
@@ -474,28 +622,230 @@ def find_similar_messages_enhanced(
     return formatted_results
 
 
+def compress_context(
+    context: str,
+    max_tokens: int,
+    db: Session,
+    conversation_id: Optional[str],
+    original_tokens: int
+) -> Tuple[str, Dict]:
+    """
+    Compress context intelligently using hybrid strategy:
+    1. Keep recent messages complete
+    2. Use summaries for old messages if available
+    3. Truncate intelligently if no summary available
+    
+    Returns: (compressed_context, metadata_dict)
+    """
+    import re
+    
+    if not context or context.strip() == "No relevant conversation history found.":
+        return context, {
+            "compression_applied": False,
+            "compression_strategy": "none",
+            "tokens_before": original_tokens,
+            "tokens_after": estimate_tokens(context) if context else 0,
+            "messages_compressed": 0
+        }
+    
+    # Parse context into individual messages
+    # Format: [timestamp] sender: content (similarity: X.XX)
+    message_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s+([^:]+):\s+(.+?)(?=\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]|$)', re.DOTALL)
+    messages = []
+    
+    for match in message_pattern.finditer(context):
+        timestamp = match.group(1)
+        sender = match.group(2).strip()
+        content = match.group(3).strip()
+        # Remove similarity score if present
+        content = re.sub(r'\s*\(similarity: [\d.]+\)\s*$', '', content)
+        content = re.sub(r'\s*\(recent context\)\s*$', '', content)
+        messages.append({
+            "timestamp": timestamp,
+            "sender": sender,
+            "content": content,
+            "full_line": match.group(0)
+        })
+    
+    if not messages:
+        # If parsing failed, try simple truncation
+        compressed = context[:max_tokens * 4]  # 4 chars per token
+        if len(compressed) < len(context):
+            compressed += "\n[... context truncated ...]"
+        return compressed, {
+            "compression_applied": True,
+            "compression_strategy": "truncation",
+            "tokens_before": original_tokens,
+            "tokens_after": estimate_tokens(compressed),
+            "messages_compressed": 0
+        }
+    
+    # Separate recent vs old messages
+    recent_messages_count = settings.rag_recent_messages_keep
+    recent_messages = messages[-recent_messages_count:] if len(messages) > recent_messages_count else messages
+    old_messages = messages[:-recent_messages_count] if len(messages) > recent_messages_count else []
+    
+    compressed_parts = []
+    messages_compressed = 0
+    strategy_used = []
+    
+    # Try to use summary for old messages
+    summary_available = False
+    if old_messages and conversation_id:
+        try:
+            summary = db.query(Summary).filter(
+                Summary.conversation_id == conversation_id
+            ).first()
+            
+            if summary and summary.summary_text:
+                # Parse summary to extract TL;DR
+                summary_text = summary.summary_text
+                if "TL;DR:" in summary_text:
+                    tldr = summary_text.split("TL;DR:")[1].split("Tags:")[0].strip()
+                    if tldr:
+                        # Format summary as a context line
+                        compressed_parts.append(f"[Summary] Previous conversation: {tldr}")
+                        summary_available = True
+                        messages_compressed = len(old_messages)
+                        strategy_used.append("summary")
+        except Exception as e:
+            log_to_db(db, "WARNING", f"Error fetching summary for compression: {str(e)}", service="rag_llamaindex")
+    
+    # If no summary, truncate old messages intelligently
+    if old_messages and not summary_available:
+        # Keep first and last old messages, truncate middle ones
+        if len(old_messages) > 2:
+            # Keep first message
+            compressed_parts.append(old_messages[0]["full_line"])
+            # Truncate middle messages
+            middle_messages = old_messages[1:-1]
+            for msg in middle_messages:
+                # Truncate content but keep structure
+                truncated_content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                compressed_parts.append(f"[{msg['timestamp']}] {msg['sender']}: {truncated_content} [truncated]")
+                messages_compressed += 1
+            # Keep last old message
+            compressed_parts.append(old_messages[-1]["full_line"])
+            strategy_used.append("truncation")
+        else:
+            # Keep all old messages if only 1-2
+            for msg in old_messages:
+                compressed_parts.append(msg["full_line"])
+    
+    # Add recent messages (always keep complete)
+    for msg in recent_messages:
+        compressed_parts.append(msg["full_line"])
+    
+    compressed_context = "\n".join(compressed_parts)
+    compressed_tokens = estimate_tokens(compressed_context)
+    
+    # If still too long, apply final truncation
+    if compressed_tokens > max_tokens:
+        # Truncate from the end, keeping the header
+        if "Relevant conversation history:" in compressed_context:
+            header = "Relevant conversation history:\n"
+            content = compressed_context[len(header):]
+            max_content_chars = (max_tokens - estimate_tokens(header)) * 4
+            if len(content) > max_content_chars:
+                content = content[:max_content_chars] + "\n[... context truncated due to length ...]"
+            compressed_context = header + content
+            strategy_used.append("final_truncation")
+    
+    final_tokens = estimate_tokens(compressed_context)
+    
+    return compressed_context, {
+        "compression_applied": True,
+        "compression_strategy": "+".join(strategy_used) if strategy_used else "none",
+        "tokens_before": original_tokens,
+        "tokens_after": final_tokens,
+        "messages_compressed": messages_compressed,
+        "recent_messages_kept": len(recent_messages),
+        "summary_used": summary_available
+    }
+
+
 def build_prompt_with_context(
     current_message: str,
     context: str,
-    user_style: Optional[str] = None
-) -> str:
+    user_style: Optional[str] = None,
+    provider: str = "openai",
+    model: str = "gpt-4o-mini",
+    db: Optional[Session] = None,
+    conversation_id: Optional[str] = None
+) -> Tuple[str, Dict]:
     """
     Build prompt with retrieved context
+    Includes dynamic token management and context compression
+    
+    Returns: (prompt, metadata_dict) with token information
     """
+    # Calculate token limits
+    context_window = get_model_context_window(provider, model)
+    available_tokens = calculate_available_context_tokens(provider, model, current_message)
+    context_tokens_before = estimate_tokens(context)
+    
+    metadata = {
+        "model_context_window": context_window,
+        "available_tokens": available_tokens,
+        "context_tokens_before": context_tokens_before,
+        "compression_applied": False,
+        "compression_strategy": "none"
+    }
+    
+    # Compress context if needed
+    if settings.rag_compression_enabled and context_tokens_before > available_tokens:
+        if db is None:
+            # If no db provided, use simple truncation
+            compressed = context[:available_tokens * 4]
+            if len(compressed) < len(context):
+                compressed += "\n[... context truncated ...]"
+            context = compressed
+            metadata["compression_applied"] = True
+            metadata["compression_strategy"] = "truncation"
+            metadata["context_tokens_after"] = estimate_tokens(context)
+        else:
+            context, compression_metadata = compress_context(
+                context,
+                available_tokens,
+                db,
+                conversation_id,
+                context_tokens_before
+            )
+            metadata.update(compression_metadata)
+            metadata["context_tokens_after"] = compression_metadata.get("tokens_after", estimate_tokens(context))
+    else:
+        metadata["context_tokens_after"] = context_tokens_before
+    
+    # Build prompt
     prompt_parts = []
     
     if context and context.strip() and context != "No relevant conversation history found.":
+        prompt_parts.append("=== Conversation History ===")
         prompt_parts.append(context)
-        prompt_parts.append("\n---\n")
-        prompt_parts.append("Based on the conversation history above, respond to the following message:")
+        prompt_parts.append("=== End of History ===")
+        prompt_parts.append("")
+        prompt_parts.append("Instructions:")
+        prompt_parts.append("- Use the conversation history above to understand context and provide relevant responses")
+        prompt_parts.append("- If the user's message refers to previous messages, use that context appropriately")
+        prompt_parts.append("- If context information is missing, ask clarifying questions when helpful")
+        prompt_parts.append("- Respond naturally and conversationally, maintaining the conversation flow")
+        if metadata.get("compression_applied"):
+            prompt_parts.append("- Note: Some older messages have been summarized/truncated for context management")
     else:
-        prompt_parts.append("You are having a conversation. Respond to the following message:")
+        prompt_parts.append("No previous conversation history available.")
+        prompt_parts.append("Respond naturally to the user's message.")
+    
+    prompt_parts.append("")
     
     if user_style:
-        prompt_parts.append(f"User communication style: {user_style}\n")
+        prompt_parts.append(f"User communication style: {user_style}")
+        prompt_parts.append("")
     
-    prompt_parts.append(f"Current message: {current_message}\n")
-    prompt_parts.append("Generate a personalized response that matches the user's style and uses the conversation context when relevant.")
+    prompt_parts.append(f"User message: {current_message}")
+    prompt_parts.append("")
+    prompt_parts.append("Generate a helpful, contextual response:")
     
-    return "\n".join(prompt_parts)
+    prompt = "\n".join(prompt_parts)
+    
+    return prompt, metadata
 

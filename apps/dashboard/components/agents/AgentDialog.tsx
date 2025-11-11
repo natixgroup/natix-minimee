@@ -27,6 +27,8 @@ interface AgentFormData {
   prompt: string;
   style: string;
   enabled: boolean;
+  whatsapp_display_name?: string;
+  approval_rules?: Record<string, any>;
 }
 
 interface AgentDialogProps {
@@ -56,6 +58,12 @@ export function AgentDialog({
       prompt: "",
       style: "",
       enabled: true,
+      whatsapp_display_name: "",
+      approval_rules: {
+        auto_approve_simple: true,
+        threshold: 0.8,
+        keywords_for_approval: [],
+      },
     },
   });
 
@@ -68,6 +76,12 @@ export function AgentDialog({
       setValue("prompt", agent.prompt);
       setValue("style", agent.style || "");
       setValue("enabled", agent.enabled);
+      setValue("whatsapp_display_name", agent.whatsapp_display_name || "");
+      setValue("approval_rules", agent.approval_rules || {
+        auto_approve_simple: true,
+        threshold: 0.8,
+        keywords_for_approval: [],
+      });
     } else {
       reset();
     }
@@ -169,6 +183,60 @@ export function AgentDialog({
                 checked={enabled}
                 onCheckedChange={(checked) => setValue("enabled", checked)}
               />
+            </div>
+
+            <div className="border-t pt-4 mt-4">
+              <h3 className="text-sm font-semibold mb-3">WhatsApp Integration</h3>
+              <div className="space-y-2">
+                <Label htmlFor="whatsapp_display_name">WhatsApp Display Name</Label>
+                <Input
+                  id="whatsapp_display_name"
+                  {...register("whatsapp_display_name")}
+                  placeholder="Name shown in WhatsApp messages (e.g., [Agent Name])"
+                />
+                <p className="text-xs text-muted-foreground">
+                  This name will appear as a prefix in WhatsApp messages sent by this agent
+                </p>
+              </div>
+            </div>
+
+            <div className="border-t pt-4 mt-4">
+              <h3 className="text-sm font-semibold mb-3">Approval Rules</h3>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="auto_approve_simple">Auto-approve simple messages</Label>
+                  <Switch
+                    id="auto_approve_simple"
+                    checked={watch("approval_rules")?.auto_approve_simple ?? true}
+                    onCheckedChange={(checked) => {
+                      setValue("approval_rules", {
+                        ...watch("approval_rules"),
+                        auto_approve_simple: checked,
+                      });
+                    }}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="threshold">Confidence threshold (0-1)</Label>
+                  <Input
+                    id="threshold"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="1"
+                    value={watch("approval_rules")?.threshold ?? 0.8}
+                    onChange={(e) => {
+                      setValue("approval_rules", {
+                        ...watch("approval_rules"),
+                        threshold: parseFloat(e.target.value),
+                      });
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Messages below this confidence threshold will require approval
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
           <DialogFooter>

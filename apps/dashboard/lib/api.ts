@@ -121,22 +121,55 @@ class ApiClient {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
     
     try {
+      // Check if body is FormData - don't set Content-Type header (browser will set it with boundary)
+      const isFormData = options?.body instanceof FormData;
+      const headers: HeadersInit = {};
+      
+      if (!isFormData) {
+        headers["Content-Type"] = "application/json";
+      }
+      
+      // Merge with any existing headers
+      if (options?.headers) {
+        Object.assign(headers, options.headers);
+      }
+      
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...options?.headers,
-        },
+        headers,
       });
       
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({
-          detail: `HTTP error! status: ${response.status}`,
-        }));
-        throw new Error(error.detail || "An error occurred");
+        // Try to parse error response as JSON
+        let errorMessage = `HTTP error! status: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          // FastAPI returns {detail: "message"} for errors
+          if (errorData.detail) {
+            errorMessage = errorData.detail;
+          } else if (errorData.message) {
+            errorMessage = errorData.message;
+          } else if (typeof errorData === 'string') {
+            errorMessage = errorData;
+          } else {
+            // If error is an object, try to stringify it
+            errorMessage = JSON.stringify(errorData);
+          }
+        } catch {
+          // If JSON parsing fails, try to get text
+          try {
+            const text = await response.text();
+            if (text) {
+              errorMessage = text;
+            }
+          } catch {
+            // Use default error message
+          }
+        }
+        throw new Error(errorMessage);
       }
 
       return response.json();
@@ -145,7 +178,11 @@ class ApiClient {
       if (error instanceof Error && error.name === 'AbortError') {
         throw new Error(`Request timeout after ${timeout}ms`);
       }
-      throw error;
+      // Ensure we always throw an Error with a message
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(String(error));
     }
   }
 
@@ -194,8 +231,16 @@ class ApiClient {
   }
 
   // Minimee Leader Agent
-  async getMinimeeLeader(userId: number) {
-    return this.request<Agent>(`/agents/leader?user_id=${userId}`);
+  async getMinimeeLeader(userId: number): Promise<Agent | null> {
+    try {
+      return await this.request<Agent>(`/agents/leader?user_id=${userId}`);
+    } catch (error: any) {
+      // 404 is expected when no leader is set, return null instead of throwing
+      if (error?.message?.includes("404") || error?.message?.includes("No leader agent found")) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async setMinimeeLeader(agentId: number, userId: number) {
@@ -514,6 +559,163 @@ class ApiClient {
     xhr.send(formData);
   }
 
+  // Contact Detection & Management
+  async detectContact(file: File, userId: number = 1) {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("user_id", String(userId));
+
+    return this.request<{
+      first_name?: string;
+      nickname?: string;
+      relation_type?: string;
+      context?: string;
+      languages?: string[];
+      location?: string;
+      importance_rating?: number;
+      dominant_themes?: string[];
+    }>("/ingest/whatsapp-detect-contact", {
+      method: "POST",
+      body: formData,
+    });
+  }
+
+  async getRelationTypes(category?: string) {
+    const url = category 
+      ? `/ingest/relation-types?category=${encodeURIComponent(category)}`
+      : "/ingest/relation-types";
+    return this.request<Array<{
+      id: number;
+      code: string;
+      label_masculin: string;
+      label_feminin: string;
+      label_autre?: string;
+      category: string;
+      display_order: number;
+      is_active: boolean;
+      meta_data?: Record<string, any>;
+    }>>(url);
+  }
+
+  async saveContact(data: {
+    user_id: number;
+    conversation_id: string;
+    first_name?: string;
+    nickname?: string;
+    gender?: string;
+    relation_type_ids?: number[];
+    context?: string;
+    languages?: string[];
+    location?: string;
+    importance_rating?: number;
+    dominant_themes?: string[];
+  }) {
+    return this.request<{
+      id: number;
+      user_id: number;
+      conversation_id: string;
+      first_name?: string;
+      nickname?: string;
+      gender?: string;
+      relation_types?: Array<{
+        id: number;
+        code: string;
+        label_masculin: string;
+        label_feminin: string;
+        label_autre?: string;
+        category: string;
+        display_order: number;
+        is_active: boolean;
+        meta_data?: Record<string, any>;
+      }>;
+      context?: string;
+      languages?: string[];
+      location?: string;
+      importance_rating?: number;
+      dominant_themes?: string[];
+      created_at: string;
+      updated_at: string;
+    }>("/ingest/whatsapp-save-contact", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getContact(conversationId: string, userId: number) {
+    return this.request<{
+      id: number;
+      user_id: number;
+      conversation_id: string;
+      first_name?: string;
+      nickname?: string;
+      gender?: string;
+      relation_types?: Array<{
+        id: number;
+        code: string;
+        label_masculin: string;
+        label_feminin: string;
+        label_autre?: string;
+        category: string;
+        display_order: number;
+        is_active: boolean;
+        meta_data?: Record<string, any>;
+      }>;
+      context?: string;
+      languages?: string[];
+      location?: string;
+      importance_rating?: number;
+      dominant_themes?: string[];
+      created_at: string;
+      updated_at: string;
+    }>(`/ingest/contacts/${conversationId}?user_id=${userId}`);
+  }
+
+  // Async WhatsApp Upload
+  async uploadWhatsAppAsync(
+    file: File,
+    userId: number = 1,
+    conversationId?: string,
+    contactId?: number
+  ) {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("user_id", String(userId));
+    if (conversationId) {
+      formData.append("conversation_id", conversationId);
+    }
+    if (contactId) {
+      formData.append("contact_id", String(contactId));
+    }
+
+    return this.request<{ job_id: number; status: string }>(
+      "/ingest/whatsapp-upload-async",
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+  }
+
+  async getIngestionJob(jobId: number) {
+    return this.request<{
+      id: number;
+      user_id: number;
+      conversation_id: string | null;
+      status: string;
+      progress: Record<string, any> | null;
+      error: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(`/ingest/jobs/${jobId}`);
+  }
+
+  async cancelIngestionJob(jobId: number) {
+    return this.request<{ message: string; job_id: number }>(
+      `/ingest/jobs/${jobId}/cancel`,
+      { method: "POST" }
+    );
+  }
+
   // Gmail
   async startGmailOAuth(userId: number = 1) {
     return this.request<{ authorization_url: string; state: string }>(
@@ -526,13 +728,36 @@ class ApiClient {
     onlyReplied: boolean = true,
     userId: number = 1
   ) {
+    // Gmail fetch can take a long time (fetching + indexing), so increase timeout to 5 minutes
     return this.request<any[]>(
-      `/gmail/fetch?days=${days}&only_replied=${onlyReplied}&user_id=${userId}`
+      `/gmail/fetch?days=${days}&only_replied=${onlyReplied}&user_id=${userId}`,
+      { timeout: 300000 } // 5 minutes
+    );
+  }
+
+  async fetchGmailThreadsAsync(
+    days: number = 30,
+    onlyReplied: boolean = true,
+    userId: number = 1
+  ) {
+    return this.request<{ job_id: number; status: string }>(
+      `/gmail/fetch-async?days=${days}&only_replied=${onlyReplied}&user_id=${userId}`,
+      { method: "POST" }
     );
   }
 
   async checkGmailStatus(userId: number = 1) {
-    return this.request<{ connected: boolean; has_token: boolean }>(
+    return this.request<{ 
+      connected: boolean; 
+      has_token: boolean;
+      has_client_credentials?: boolean;
+      has_refresh_token?: boolean;
+      error?: string;
+      configuration_help?: {
+        client_credentials_missing: boolean;
+        instructions: string;
+      };
+    }>(
       `/gmail/status?user_id=${userId}`
     );
   }

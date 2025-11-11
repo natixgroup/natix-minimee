@@ -4,7 +4,7 @@ Handles proper date parsing, emoji preservation, multi-line messages
 """
 import re
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Callable
 
 
 def parse_whatsapp_date(date_str: str) -> Optional[datetime]:
@@ -113,7 +113,11 @@ def parse_whatsapp_line(line: str) -> Optional[Tuple[datetime, str, str]]:
     return None
 
 
-def parse_whatsapp_export(content: str, user_whatsapp_id: Optional[str] = None) -> List[Dict]:
+def parse_whatsapp_export(
+    content: str, 
+    user_whatsapp_id: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None
+) -> List[Dict]:
     """
     Parse complete WhatsApp export file
     Returns list of message dictionaries with: timestamp, sender, content, recipient, recipients
@@ -123,17 +127,22 @@ def parse_whatsapp_export(content: str, user_whatsapp_id: Optional[str] = None) 
     Args:
         content: WhatsApp export file content
         user_whatsapp_id: Optional WhatsApp ID of the user (to identify recipient in 1-1 chats)
+        progress_callback: Optional callback function(lines_processed, total_lines, messages_found) for progress updates
     
     Returns:
         List of message dicts with recipient/recipients populated
     """
     lines = content.split('\n')
+    total_lines = len(lines)
     messages = []
     current_message = None
     current_content_lines = []
     
     # First pass: parse all messages
-    for line in lines:
+    for idx, line in enumerate(lines):
+        # Call progress callback every 500 lines
+        if progress_callback and (idx + 1) % 500 == 0:
+            progress_callback(idx + 1, total_lines, len(messages))
         parsed = parse_whatsapp_line(line)
         
         if parsed:
@@ -160,6 +169,10 @@ def parse_whatsapp_export(content: str, user_whatsapp_id: Optional[str] = None) 
     if current_message:
         current_message['content'] = '\n'.join(current_content_lines)
         messages.append(current_message)
+    
+    # Final progress update
+    if progress_callback:
+        progress_callback(total_lines, total_lines, len(messages))
     
     if not messages:
         return messages

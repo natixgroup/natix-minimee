@@ -57,6 +57,8 @@ class AgentCreate(BaseModel):
     style: Optional[str] = None
     enabled: bool = True
     user_id: int
+    whatsapp_display_name: Optional[str] = None
+    approval_rules: Optional[Dict] = None
 
 
 class AgentUpdate(BaseModel):
@@ -65,6 +67,8 @@ class AgentUpdate(BaseModel):
     prompt: Optional[str] = None
     style: Optional[str] = None
     enabled: Optional[bool] = None
+    whatsapp_display_name: Optional[str] = None
+    approval_rules: Optional[Dict] = None
 
 
 class AgentResponse(BaseModel):
@@ -75,6 +79,10 @@ class AgentResponse(BaseModel):
     style: Optional[str]
     enabled: bool
     user_id: int
+    is_minimee_leader: bool
+    whatsapp_integration_id: Optional[int]
+    whatsapp_display_name: Optional[str]
+    approval_rules: Optional[Dict]
     created_at: datetime
     updated_at: datetime
 
@@ -278,6 +286,7 @@ class ChatMessageRequest(BaseModel):
     sender: Optional[str] = "User"
     source: Optional[str] = "dashboard"
     timestamp: Optional[str] = None
+    agent_name: Optional[str] = None  # For routing to specific agent via [Agent Name] prefix
 
 
 class ChatMessageResponse(BaseModel):
@@ -317,6 +326,98 @@ class WhatsAppIntegrationResponse(BaseModel):
     display_name: Optional[str]
     status: str
     auth_info_path: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Relation Type Schemas
+class RelationTypeResponse(BaseModel):
+    id: int
+    code: str
+    label_masculin: str
+    label_feminin: str
+    label_autre: Optional[str]
+    category: str  # 'personnel' or 'professionnel'
+    display_order: int
+    is_active: bool
+    meta_data: Optional[Dict[str, Any]] = None  # Renamed from metadata to match model
+    
+    class Config:
+        from_attributes = True
+        populate_by_name = True  # Allow both meta_data and metadata in JSON
+
+
+# Contact Schemas
+class ContactCreate(BaseModel):
+    user_id: int
+    conversation_id: str
+    first_name: Optional[str] = None
+    nickname: Optional[str] = None
+    gender: Optional[str] = None  # masculin, féminin, autre
+    relation_type_ids: Optional[List[int]] = None  # List of relation_type IDs
+    context: Optional[str] = None
+    languages: Optional[List[str]] = None
+    location: Optional[str] = None
+    importance_rating: Optional[int] = Field(None, ge=1, le=5)
+    dominant_themes: Optional[List[str]] = None
+
+
+class ContactUpdate(BaseModel):
+    first_name: Optional[str] = None
+    nickname: Optional[str] = None
+    gender: Optional[str] = None
+    relation_type_ids: Optional[List[int]] = None  # List of relation_type IDs
+    context: Optional[str] = None
+    languages: Optional[List[str]] = None
+    location: Optional[str] = None
+    importance_rating: Optional[int] = Field(None, ge=1, le=5)
+    dominant_themes: Optional[List[str]] = None
+
+
+class ContactResponse(BaseModel):
+    id: int
+    user_id: int
+    conversation_id: str
+    first_name: Optional[str]
+    nickname: Optional[str]
+    gender: Optional[str]
+    relation_types: Optional[List[RelationTypeResponse]] = None  # List of relation types
+    context: Optional[str]
+    languages: Optional[List[str]]
+    location: Optional[str]
+    importance_rating: Optional[int]
+    dominant_themes: Optional[List[str]]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ContactDetectionResponse(BaseModel):
+    """Response for contact detection (pre-filled data)"""
+    first_name: Optional[str] = None
+    nickname: Optional[str] = None
+    gender: Optional[str] = None
+    relation_type_ids: Optional[List[int]] = None  # Suggested relation_type IDs
+    context: Optional[str] = None
+    languages: Optional[List[str]] = None
+    location: Optional[str] = None
+    importance_rating: Optional[int] = None
+    dominant_themes: Optional[List[str]] = None
+
+
+# Ingestion Job Schemas
+class IngestionJobResponse(BaseModel):
+    id: int
+    user_id: int
+    conversation_id: Optional[str]
+    status: str  # pending/running/completed/failed
+    progress: Optional[Dict[str, Any]]
+    error: Optional[str]
     created_at: datetime
     updated_at: datetime
 

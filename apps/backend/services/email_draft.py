@@ -6,7 +6,8 @@ import asyncio
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from models import GmailThread, Message
-from services.rag_llamaindex import retrieve_context
+from services.minimee_agent.retriever import create_advanced_retriever
+from services.minimee_agent.llm_wrapper import create_minimee_llm
 from services.llm_router import generate_multiple_options
 from services.agent_manager import select_agent_for_context
 from services.logs_service import log_to_db
@@ -41,16 +42,19 @@ async def generate_email_drafts(
         if not last_message:
             raise ValueError(f"No messages found in thread {thread_id}")
         
-        # Retrieve context using RAG (searches Gmail history, limit to current thread)
-        context = retrieve_context(
+        # Retrieve context using LangChain RAG (searches Gmail history, limit to current thread)
+        llm = create_minimee_llm(db=db, user_id=user_id)
+        retriever = create_advanced_retriever(
+            llm=llm,
             db=db,
-            query=last_message.content,
             user_id=user_id,
-            limit=5,
-            language=None,
-            use_chunks=True,
-            conversation_id=thread_id  # Limit to current thread for better context
+            conversation_id=thread_id,
+            source="gmail",
+            initial_limit=10,
+            final_limit=5
         )
+        docs = retriever.get_relevant_documents(last_message.content)
+        context = "\n".join([doc.page_content for doc in docs])
         
         # Select appropriate agent
         agent = select_agent_for_context(db, last_message.content, user_id)

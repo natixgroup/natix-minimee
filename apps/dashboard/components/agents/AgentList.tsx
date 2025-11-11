@@ -11,10 +11,10 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Edit, Trash2 } from "lucide-react";
+import { Edit, Trash2, Crown } from "lucide-react";
 import { useState } from "react";
 import { AgentDialog } from "./AgentDialog";
-import { type Agent } from "@/lib/api";
+import { type Agent, api } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -22,12 +22,26 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 export function AgentList() {
-  const { data: agents = [], isLoading } = useAgents();
+  const userId = 1; // TODO: Get from auth context
+  const { data: agents = [], isLoading } = useAgents(userId);
   const deleteAgent = useDeleteAgent();
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  const handleSetLeader = async (agentId: number) => {
+    try {
+      await api.setMinimeeLeader(agentId, userId);
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      toast.success("Leader agent updated successfully");
+    } catch (error) {
+      toast.error(`Failed to set leader: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  };
 
   if (isLoading) {
     return <div className="text-muted-foreground">Loading agents...</div>;
@@ -60,6 +74,7 @@ export function AgentList() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Role</TableHead>
+              <TableHead>Leader</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Created</TableHead>
               <TableHead className="text-right">Actions</TableHead>
@@ -70,6 +85,23 @@ export function AgentList() {
               <TableRow key={agent.id}>
                 <TableCell className="font-medium">{agent.name}</TableCell>
                 <TableCell>{agent.role}</TableCell>
+                <TableCell>
+                  {agent.is_minimee_leader ? (
+                    <Badge variant="default" className="bg-yellow-600">
+                      <Crown className="h-3 w-3 mr-1" />
+                      Leader
+                    </Badge>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleSetLeader(agent.id)}
+                      className="text-xs"
+                    >
+                      Set as Leader
+                    </Button>
+                  )}
+                </TableCell>
                 <TableCell>
                   <Badge 
                     variant={agent.enabled ? "default" : "secondary"}

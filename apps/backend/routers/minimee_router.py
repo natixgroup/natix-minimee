@@ -698,13 +698,14 @@ async def chat_stream(
                     )
                     
                     # 7. Send final event
-                    yield f"data: {json.dumps({
+                    final_data = {
                         'type': 'done', 
                         'response': final_response, 
                         'message_id': minimee_message.id,
                         'requires_approval': requires_approval,
                         'agent_name': agent_model.name if agent_model else 'Minimee'
-                    })}\n\n"
+                    }
+                    yield f"data: {json.dumps(final_data)}\n\n"
                     
                     break
                     
@@ -835,14 +836,19 @@ async def chat_direct(
                 conversation_id=conversation_id
             )
             if minimee_agent:
-                agent_model = minimee_agent.agent
+                # Use stored attributes instead of agent model to avoid detached instance errors
+                agent_id = minimee_agent.agent_id
+                agent_name = minimee_agent.agent_name
                 log_to_db(db, "INFO", 
-                    f"Leader agent loaded: agent_id={agent_model.id}, name={agent_model.name}",
+                    f"Leader agent loaded: agent_id={agent_id}, name={agent_name}",
                     service="minimee_router",
                     request_id=request_id,
                     user_id=chat_request.user_id,
-                    metadata={"agent_id": agent_model.id, "agent_name": agent_model.name}
+                    metadata={"agent_id": agent_id, "agent_name": agent_name}
                 )
+                # Create a simple object for compatibility
+                from types import SimpleNamespace
+                agent_model = SimpleNamespace(id=agent_id, name=agent_name)
             else:
                 log_to_db(db, "ERROR", 
                     "No leader agent found and no agent specified. Cannot process request.",

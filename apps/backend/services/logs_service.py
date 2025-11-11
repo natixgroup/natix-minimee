@@ -28,6 +28,8 @@ def log_to_db(
     """
     Write log entry to database with structured metadata
     Supports structured JSON logging for better parsing/aggregation
+    
+    Handles transaction errors gracefully by rolling back before committing.
     """
     # Build structured metadata
     structured_metadata = {
@@ -48,10 +50,28 @@ def log_to_db(
         service=service,
         timestamp=datetime.utcnow()
     )
-    db.add(log_entry)
-    db.commit()
-    db.refresh(log_entry)
-    return log_entry
+    
+    try:
+        db.add(log_entry)
+        db.commit()
+        db.refresh(log_entry)
+        return log_entry
+    except Exception as e:
+        # If there's a transaction error, rollback and retry
+        try:
+            db.rollback()
+            # Retry with a fresh transaction
+            db.add(log_entry)
+            db.commit()
+            db.refresh(log_entry)
+            return log_entry
+        except Exception as retry_error:
+            # If retry also fails, rollback and raise
+            db.rollback()
+            # Log to console as fallback if DB logging fails
+            print(f"ERROR: Failed to log to database: {str(retry_error)}")
+            print(f"  Original message: {message}")
+            raise
 
 
 def log_structured(

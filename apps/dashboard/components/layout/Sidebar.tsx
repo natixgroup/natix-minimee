@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Home, Bot, FileText, Settings, Moon, Sun, MessageSquare, Sparkles, TestTube } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -32,8 +33,21 @@ export function Sidebar() {
 
   return (
     <div className="flex h-full w-64 flex-col border-r bg-sidebar">
-      <div className="flex h-16 items-center border-b px-6">
-        <h1 className="text-xl font-bold">🧠 Minimee</h1>
+      <div className="flex h-24 items-center justify-center border-b px-6">
+        <div className="flex items-center gap-4">
+          <div className="relative h-14 w-14 flex-shrink-0">
+            <Image
+              src="/icon.png"
+              alt="Minimee"
+              fill
+              className="object-contain opacity-85 transition-opacity hover:opacity-100"
+              priority
+            />
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground/90">
+            Minimee
+          </h1>
+        </div>
       </div>
 
       <nav className="flex-1 space-y-1 p-4">
